@@ -67,14 +67,13 @@ def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
 
     print("Extracting sequences...")
     genome = Fasta(genome_path)
-    sequences = []
+    sequences = pd.Series(index=df.index, dtype=str)
     for chrom, group in df.groupby("chrom"):
         if chrom not in genome:
-            sequences.extend(["N" * 16] * len(group))
+            sequences[group.index] = "N" * 16
             continue
         chrom_seq = genome[chrom][:].seq.upper()
-        seqs = [chrom_seq[s:e] for s, e in zip(group["start"], group["end"])]
-        sequences.extend(seqs)
+        sequences[group.index] = [chrom_seq[s:e] for s, e in zip(group["start"], group["end"])]
     df["sequence"] = sequences
     print(f"  Done. Example: {df['sequence'].iloc[0]}")
 
