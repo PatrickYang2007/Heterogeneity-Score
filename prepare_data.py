@@ -13,7 +13,10 @@ def one_hot_encode(sequences):
         "G": [0.0, 0.0, 1.0, 0.0],
         "T": [0.0, 0.0, 0.0, 1.0],
     }
-    return np.array([[mapping[base] for base in seq] for seq in sequences])
+    # N and other IUPAC ambiguity codes map to an all-zero ("no information")
+    # vector instead of raising a KeyError.
+    unknown = [0.0, 0.0, 0.0, 0.0]
+    return np.array([[mapping.get(base, unknown) for base in seq] for seq in sequences])
 
 
 def run_macs2_bdgpeakcall(bedgraph_path, out_dir, cutoff=2.0, min_length=200, max_gap=100):
@@ -61,8 +64,12 @@ def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
         header=None,
         usecols=[0, 1, 2, 3],
         names=["chrom", "start", "end", "score"],
-        dtype={"chrom": str, "start": int, "end": int, "score": float},
+        # start/end are read as float because some rows store coordinates in
+        # scientific notation (e.g. "7.2e+07"), which int parsing rejects.
+        dtype={"chrom": str, "start": float, "end": float, "score": float},
     )
+    df["start"] = df["start"].round().astype(int)
+    df["end"] = df["end"].round().astype(int)
     print(f"  {len(df):,} regions loaded")
 
     print("Extracting sequences...")

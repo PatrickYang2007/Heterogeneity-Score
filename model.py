@@ -24,17 +24,53 @@ class GenomicDataset(Dataset):
         return self.x[idx], self.y[idx]
 
 
-def make_dataloader(parquet_path, batch_size=64, shuffle=True, num_workers=4):
+def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4):
     ds = GenomicDataset(parquet_path)
-    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle,
-                      num_workers=num_workers, pin_memory=True)
+    return DataLoader(ds, batch_size = batch_size, shuffle = shuffle,
+                      num_workers = num_workers, pin_memory = True)
 
 
-class homogeneity_score_model(nn.Module):
-    def __init__(self):
+def conv_block(dim, dim_out, ker_size, dropout):
+    return nn.Sequential(
+        nn.BatchNorm1d(dim),
+        nn.GELU(),
+        nn.Conv1d(dim, dim_out, ker_size),
+        nn.Dropout(dropout),
+    )
+
+
+class AttentionPool(nn.Module):
+    def __init__(self, channels, hidden=32):
         super().__init__()
+        self.scores = nn.Sequential(
+            nn.Linear(channels, hidden),
+            nn.Tanh(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, x):
+        # x shape comes in as (batch, channels, L)
+        # but nn.Linear wants (batch, L, channels)
+        x = x.transpose(1, 2)
+        scores = self.scores(x)
+        weights = scores.softmax(dim = 1)
+        output = (x * weights).sum(dim = 1)
+        return output
 
 
-class attention_pool(nn.Module):
-    def __init__(self):
+class HomogeneityScoreModel(nn.Module):
+    def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32):
         super().__init__()
+        self.block1 = conv_block(in_channels, num_filters, ker_size, dropout)
+        self.block2 = conv_block(num_filters, num_filters * 2, ker_size, dropout)
+        self.block3 = conv_block(num_filters * 2, num_filters * 4, ker_size, dropout)
+        self.pool = AttentionPool(num_filters * 4)
+        self.fc = nn.Linear(num_filters * 4, 1)
+
+    def forward(self, x):
+        x = self.block1(x)
+        x = self.block2(x)
+        x = self.block3(x)
+        x = self.pool(x)
+        x = self.fc(x)
+        return F.softplus(x)
