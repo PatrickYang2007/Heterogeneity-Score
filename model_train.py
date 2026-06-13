@@ -5,7 +5,7 @@ from scipy.stats import pearsonr
 
 class Trainer:
     def __init__(self, model, train_loader, val_loader, num_epochs, lr=1e-3,
-                 weight_decay=1e-4, grad_clip=1.0, patience=10):
+                 weight_decay=1e-4, grad_clip=1.0, patience=10, early_stopping=True):
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -16,9 +16,10 @@ class Trainer:
                                             weight_decay=weight_decay)
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.optimizer, mode='min', factor=0.5, patience=5)
-        self.loss_fn = nn.PoissonNLLLoss(log_input=False)
+        self.loss_fn = nn.MSELoss()
         self.grad_clip = grad_clip
         self.patience = patience
+        self.early_stopping = early_stopping
         self.best_val_loss = float('inf')
 
     def train_epoch(self):
@@ -76,7 +77,7 @@ class Trainer:
                 torch.save(self.model.state_dict(), "best_model.pt")
             else:
                 epochs_no_improve += 1
-                if epochs_no_improve >= self.patience:
+                if self.early_stopping and epochs_no_improve >= self.patience:
                     print(f"early stopping at epoch {epoch+1} "
                           f"(no val improvement for {self.patience} epochs)")
                     break

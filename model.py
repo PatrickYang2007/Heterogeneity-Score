@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import pandas as pd
 import numpy as np
@@ -73,4 +72,4 @@ class HomogeneityScoreModel(nn.Module):
         x = self.block3(x)
         x = self.pool(x)
         x = self.fc(x)
-        return F.softplus(x)
+        return torch.sigmoid(x)
