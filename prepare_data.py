@@ -109,3 +109,51 @@ def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
     test_df.to_parquet(f"{out_dir}/test.parquet",   index=False)
     print(f"Saved to {out_dir}/")
 
+
+# ---------------------------------------------------------------------------
+# Configuration - edit these for future data prep runs
+# ---------------------------------------------------------------------------
+DATA_DIR = "data"
+BEDGRAPH_PATH = f"{DATA_DIR}/entropy_specificity_onGreaterThan1_stitched_annotated_complete.bedgraph"
+GENOME_PATH = f"{DATA_DIR}/GRCh38.primary_assembly.genome.fa"
+OUT_DIR = DATA_DIR
+
+# Chromosome-level train/val/test split. Splitting by whole chromosome (rather
+# than randomly shuffling rows) keeps the model from seeing sequence near a
+# validation/test region during training, which would make val/test scores
+# look better than they really are.
+#   - TEST_CHROMS held out entirely (chr8/chr9 follow the common DeepSEA/Basset
+#     convention for a genomics test set).
+#   - VAL_CHROMS used for early stopping / LR scheduling (chr2 is large,
+#     chr19 is small and gene-dense, giving validation a size mix).
+#   - TRAIN_CHROMS is everything else, computed automatically below.
+TEST_CHROMS = ["chr8", "chr9"]
+VAL_CHROMS = ["chr2", "chr19"]
+ALL_CHROMS = [f"chr{i}" for i in range(1, 23)] + ["chrX"]
+TRAIN_CHROMS = [c for c in ALL_CHROMS if c not in TEST_CHROMS + VAL_CHROMS]
+
+# MACS2 bdgpeakcall parameters (see run_macs2_bdgpeakcall above).
+# MACS2_CUTOFF is on the same scale as the bedgraph "score" column (0-1 here,
+# not raw signal) - a region counts as part of a peak once its score crosses
+# this value. 0.75 keeps regions in roughly the top quartile+ of scores.
+MACS2_CUTOFF = 0.75
+MACS2_MIN_LENGTH = 200
+MACS2_MAX_GAP = 100
+
+
+def main():
+    prepare_data(
+        bedgraph_path=BEDGRAPH_PATH,
+        genome_path=GENOME_PATH,
+        out_dir=OUT_DIR,
+        train_chroms=TRAIN_CHROMS,
+        val_chroms=VAL_CHROMS,
+        cutoff=MACS2_CUTOFF,
+        min_length=MACS2_MIN_LENGTH,
+        max_gap=MACS2_MAX_GAP,
+    )
+
+
+if __name__ == "__main__":
+    main()
+
