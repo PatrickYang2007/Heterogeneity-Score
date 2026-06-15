@@ -3,3 +3,6 @@ data/
 __pycache__/
 *.out
 *.err
+*.pt
+*.png
+*.log

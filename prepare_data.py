@@ -19,6 +19,39 @@ def one_hot_encode(sequences):
     return np.array([[mapping.get(base, unknown) for base in seq] for seq in sequences])
 
 
+# Index encoding (A=0, C=1, G=2, T=3, anything else=4 for N/ambiguity codes).
+# Used by GenomicDataset to store sequences compactly as int8 and build the
+# one-hot tensor on the fly, so memory stays flat as the window width grows.
+_BASE_TO_IDX = np.full(256, 4, dtype=np.int8)
+for _b, _i in {"A": 0, "C": 1, "G": 2, "T": 3}.items():
+    _BASE_TO_IDX[ord(_b)] = _i
+    _BASE_TO_IDX[ord(_b.lower())] = _i
+
+
+def encode_indices(sequences):
+    """Encode a list of equal-length sequences to an int8 array (N, L)."""
+    arr = np.frombuffer("".join(sequences).encode("ascii"), dtype=np.uint8)
+    return _BASE_TO_IDX[arr].reshape(len(sequences), -1)
+
+
+def extract_window(chrom_seq, start, end, window):
+    """Return a sequence of length `window` centered on [start, end).
+
+    Out-of-bounds positions at chromosome ends are padded with 'N' so every
+    returned sequence has exactly `window` bases. If `window` is None or <= the
+    region width, the original [start, end) slice is returned unchanged.
+    """
+    if window is None or window <= (end - start):
+        return chrom_seq[start:end]
+    center = (start + end) // 2
+    new_start = center - window // 2
+    new_end = new_start + window
+    left_pad = max(0, -new_start)
+    right_pad = max(0, new_end - len(chrom_seq))
+    core = chrom_seq[max(0, new_start):min(len(chrom_seq), new_end)]
+    return "N" * left_pad + core + "N" * right_pad
+
+
 def run_macs2_bdgpeakcall(bedgraph_path, out_dir, cutoff=2.0, min_length=200, max_gap=100):
     """Run MACS2 bdgpeakcall on a bedgraph and return path to the output peak BED file."""
     peak_path = os.path.join(out_dir, "peaks.bed")
@@ -56,7 +89,8 @@ def filter_by_macs2_peaks(df, peak_path):
 
 
 def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
-                 cutoff=2.0, min_length=200, max_gap=100, peak_path=None):
+                 cutoff=2.0, min_length=200, max_gap=100, peak_path=None,
+                 window=None):
     print("Loading bedgraph...")
     df = pd.read_csv(
         bedgraph_path,
@@ -80,7 +114,10 @@ def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
             sequences[group.index] = "N" * 16
             continue
         chrom_seq = genome[chrom][:].seq.upper()
-        sequences[group.index] = [chrom_seq[s:e] for s, e in zip(group["start"], group["end"])]
+        sequences[group.index] = [
+            extract_window(chrom_seq, s, e, window)
+            for s, e in zip(group["start"], group["end"])
+        ]
     df["sequence"] = sequences
     print(f"  Done. Example: {df['sequence'].iloc[0]}")
 
@@ -140,6 +177,14 @@ MACS2_CUTOFF = 0.75
 MACS2_MIN_LENGTH = 200
 MACS2_MAX_GAP = 100
 
+# Sequence window width fed to the model. The raw regions are 16 bp, which is
+# too short to carry much regulatory context; widening symmetrically around
+# each region's center gives the model flanking sequence (motif syntax, GC/CpG
+# content) while keeping the same per-region score as the label. Set to None to
+# keep the original 16 bp regions. To re-extract wider windows from the EXISTING
+# splits without re-running MACS2, use widen_windows.py instead.
+WINDOW = 256
+
 
 def main():
     prepare_data(
@@ -151,6 +196,7 @@ def main():
         cutoff=MACS2_CUTOFF,
         min_length=MACS2_MIN_LENGTH,
         max_gap=MACS2_MAX_GAP,
+        window=WINDOW,
     )
 
 

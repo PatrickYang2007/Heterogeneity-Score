@@ -53,10 +53,11 @@ def plot_loss_curves(train_losses, val_losses, out_dir):
 
 
 def evaluate(weight_file, test_parquet, val_parquet, out_dir=".",
-             num_filters=32, ker_size=5, dropout=0.3):
+             num_filters=32, ker_size=5, dropout=0.3, pool=2):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size, num_filters=num_filters)
+    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+                                  num_filters=num_filters, pool=pool)
     model.load_state_dict(torch.load(weight_file, map_location=device))
     model = model.to(device)
 
