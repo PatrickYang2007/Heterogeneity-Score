@@ -41,7 +41,7 @@ def main():
     train_losses, val_losses = trainer.fit()
 
     plot_loss_curves(train_losses, val_losses, out_dir=OUT_DIR)
-    print(f"best val loss: {trainer.best_val_loss:.4f}")
+    print(f"best val pearson: {trainer.best_val_corr:.4f}  (val loss at that epoch tracked separately)")
     print(f"model saved to best_model.pt")
 
 

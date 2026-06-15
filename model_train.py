@@ -21,6 +21,7 @@ class Trainer:
         self.patience = patience
         self.early_stopping = early_stopping
         self.best_val_loss = float('inf')
+        self.best_val_corr = float('-inf')
 
     def train_epoch(self):
         self.model.train()
@@ -73,6 +74,9 @@ class Trainer:
 
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+
+            if corr > self.best_val_corr:
+                self.best_val_corr = corr
                 epochs_no_improve = 0
                 torch.save(self.model.state_dict(), "best_model.pt")
             else:
