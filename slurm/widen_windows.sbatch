@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=prepare_data
-#SBATCH --output=prepare_data.%j.out
-#SBATCH --error=prepare_data.%j.err
+#SBATCH --job-name=widen_windows
+#SBATCH --output=widen_windows.%j.out
+#SBATCH --error=widen_windows.%j.err
 #SBATCH --partition=ycga
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
@@ -14,4 +14,4 @@ module load miniconda
 conda activate homogeneityScore
 
 cd "/vast/palmer/pi/garg/Patrick/Homogeneity Score"
-python prepare_data.py
+python src/widen_windows.py

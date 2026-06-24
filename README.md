@@ -79,53 +79,63 @@ Dependencies: `torch`, `pandas`, `numpy`, `pyfaidx`, `scipy`, `matplotlib`, and
 `macs2` (for peak calling). Place the genome FASTA and bedgraph in `data/`
 (both are git-ignored).
 
+All experiment settings live in `src/config.py` (`WINDOW`, `AGGREGATE`); set them
+once and every script reads from there. The Slurm scripts in `slurm/` `cd` to the
+project root and run `python src/<script>.py`, so submit them from the repo root.
+
 ### 1. Prepare data
 ```bash
-python prepare_data.py            # bedgraph -> data/{train,val,test}.parquet
-python widen_windows.py           # -> data/{split}_w256.parquet (per-region context)
+sbatch slurm/prepare_data.sbatch     # bedgraph -> data/{train,val,test}.parquet
+sbatch slurm/widen_windows.sbatch    # -> data/{split}_w{WINDOW}.parquet (per-region)
 ```
 
-For the summed-bin experiment instead:
+For the summed-bin experiment instead (set `AGGREGATE = True` in `src/config.py`):
 ```bash
-python aggregate_bins.py          # -> data/{split}_agg256.parquet
+sbatch slurm/aggregate_bins.sbatch   # -> data/{split}_agg{WINDOW}.parquet
 ```
 
 ### 2. Train
-Set `WINDOW` and `AGGREGATE` at the top of `train.py`, then:
+After the matching data exists for the current `WINDOW`/`AGGREGATE`:
 ```bash
-python train.py                   # writes best_model.pt, loss_curves.png
+sbatch slurm/train.sbatch            # -> Models/best_model_{w,agg}{WINDOW}.pt + loss curve
 ```
 
 ### 3. Evaluate / predict
 ```bash
-python -c "from evaluate import evaluate; \
-  evaluate('best_model.pt', 'data/test_w256.parquet', 'data/val_w256.parquet')"
+python -c "import sys; sys.path.insert(0, 'src'); from evaluate import evaluate; \
+  evaluate('Models/best_model_w256_perRegion.pt', 'data/test_w256.parquet', 'data/val_w256.parquet')"
 
-python predict.py data/test_w256.parquet --weights best_model.pt --output preds.tsv
+python src/predict.py data/test_w256.parquet \
+  --weights Models/best_model_w256_perRegion.pt --output preds.tsv
 # add --aggregate when the weights came from a summed-bin model
 ```
 
-On an HPC cluster, `prepare_data.sbatch` and `train.sbatch` wrap these as Slurm
-jobs (edit the conda env / partitions for your system).
-
 ## Repository layout
+
+```
+src/      Python modules (config, model, training, data prep)
+slurm/    Slurm submission scripts (.sbatch)
+Models/   saved checkpoints (*.pt) and their training logs
+data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
+```
 
 | File | Purpose |
 |---|---|
-| `prepare_data.py` | bedgraph → sequences, MACS2 peak filter, chrom split, parquet |
-| `widen_windows.py` | re-extract wider context windows from existing splits |
-| `aggregate_bins.py` | summed-bin experiment: tile genome, sum scores per bin |
-| `model.py` | CNN, attention pooling, `GenomicDataset`, dataloader |
-| `model_train.py` | `Trainer` (training/validation loops, checkpointing) |
-| `train.py` | training entry point and hyperparameters |
-| `evaluate.py` | metrics (Pearson/Spearman) and scatter/loss plots |
-| `predict.py` | run inference on new sequences |
-| `*.sbatch` | Slurm submission scripts |
+| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`) |
+| `src/prepare_data.py` | bedgraph → sequences, MACS2 peak filter, chrom split, parquet |
+| `src/widen_windows.py` | re-extract wider context windows from existing splits |
+| `src/aggregate_bins.py` | summed-bin experiment: tile genome, sum scores per bin |
+| `src/model.py` | CNN, attention pooling, `GenomicDataset`, dataloader |
+| `src/model_train.py` | `Trainer` (training/validation loops, checkpointing) |
+| `src/train.py` | training entry point and hyperparameters |
+| `src/evaluate.py` | metrics (Pearson/Spearman) and scatter/loss plots |
+| `src/predict.py` | run inference on new sequences |
+| `slurm/*.sbatch` | Slurm submission scripts |
 
 ## Notes
 
 - `data/`, model checkpoints (`*.pt`), plots (`*.png`), and Slurm logs are
   git-ignored; only code is tracked.
-- Changing `WINDOW` to a new size means regenerating that size's data once
-  (`widen_windows.py` or `aggregate_bins.py`); after that you can flip `AGGREGATE`
-  freely without regenerating.
+- Changing `WINDOW` in `src/config.py` means regenerating that size's data once
+  (`widen_windows.sbatch` or `aggregate_bins.sbatch`); after that you can flip
+  `AGGREGATE` freely without regenerating.

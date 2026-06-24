@@ -1,25 +1,13 @@
+import os
 import torch
 from model import HomogeneityScoreModel
 from model_train import Trainer
 from model import make_dataloader
 from evaluate import plot_loss_curves
+from config import WINDOW, AGGREGATE
 
 DATA_DIR = "data"
-OUT_DIR = "."
-
-# Sequence window width. Must match what was produced by widen_windows.py /
-# prepare_data.py. Set to None to train on the original 16 bp regions
-# (train_<split>.parquet); otherwise the wide files train_w{WINDOW}.parquet etc.
-WINDOW = 256
-
-# Summed-bin experiment toggle. Flip this to switch which idea you're training:
-#   AGGREGATE = False -> original per-region score, data/{split}_w{WINDOW}.parquet,
-#                        sigmoid output (label in [0, 1]). This is the default.
-#   AGGREGATE = True  -> summed-bin label from aggregate_bins.py,
-#                        data/{split}_agg{WINDOW}.parquet, linear output (the label
-#                        is a SUM of region scores, not bounded in [0, 1]).
-# Generate the matching data first (widen_windows.py vs aggregate_bins.py).
-AGGREGATE = False
+OUT_DIR = "Models"   # checkpoints and loss curve are written here
 
 NUM_FILTERS = 32
 KER_SIZE = 5
@@ -44,9 +32,10 @@ def main():
     train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE)
     val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE, shuffle = False)
 
-    # Each experiment saves to its own checkpoint so runs don't overwrite each
-    # other, e.g. best_model_w256.pt vs best_model_agg256.pt.
-    checkpoint_path = f"best_model{suffix}.pt"
+    # Each experiment saves to its own checkpoint under Models/ so runs don't
+    # overwrite each other, e.g. Models/best_model_w256.pt vs best_model_agg256.pt.
+    os.makedirs(OUT_DIR, exist_ok=True)
+    checkpoint_path = f"{OUT_DIR}/best_model{suffix}.pt"
 
     # Summed-bin labels are unbounded, so drop the final sigmoid (bounded=False).
     model = HomogeneityScoreModel(dropout = DROPOUT, ker_size = KER_SIZE,

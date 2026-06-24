@@ -14,13 +14,11 @@ import pandas as pd
 from pyfaidx import Fasta
 
 from prepare_data import extract_window
+from config import WINDOW
 
 DATA_DIR = "data"
 GENOME_PATH = f"{DATA_DIR}/GRCh38.primary_assembly.genome.fa"
 SPLITS = ["train", "val", "test"]
-
-# Window width in bp. Change this and re-run to sweep different context sizes.
-WINDOW = 256
 
 
 def widen_split(split, genome, window):

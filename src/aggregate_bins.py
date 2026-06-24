@@ -29,14 +29,14 @@ import pandas as pd
 from pyfaidx import Fasta
 
 from prepare_data import TRAIN_CHROMS, VAL_CHROMS, TEST_CHROMS
+from config import WINDOW
 
 DATA_DIR = "data"
 BEDGRAPH_PATH = f"{DATA_DIR}/entropy_specificity_onGreaterThan1_stitched_annotated_complete.bedgraph"
 GENOME_PATH = f"{DATA_DIR}/GRCh38.primary_assembly.genome.fa"
 
-# Bin width in bp. Each bin's label is the sum of the scores of the 16 bp regions
-# whose center falls in [bin_start, bin_start + WINDOW).
-WINDOW = 256
+# Bin width in bp (from config.WINDOW). Each bin's label is the sum of the scores
+# of the 16 bp regions whose center falls in [bin_start, bin_start + WINDOW).
 
 
 def extract_bin(chrom_seq, bin_start, window):
