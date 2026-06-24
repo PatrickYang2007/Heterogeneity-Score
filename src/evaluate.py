@@ -40,7 +40,7 @@ def plot_scatter(preds, targets, split, out_dir):
     return pearson, spearman
 
 
-def plot_loss_curves(train_losses, val_losses, out_dir):
+def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(train_losses, label="train")
     ax.plot(val_losses, label="val")
@@ -48,7 +48,7 @@ def plot_loss_curves(train_losses, val_losses, out_dir):
     ax.set_ylabel("loss")
     ax.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_dir}/loss_curves.png", dpi=150)
+    plt.savefig(f"{out_dir}/{filename}", dpi=150)
     plt.close()
 
 

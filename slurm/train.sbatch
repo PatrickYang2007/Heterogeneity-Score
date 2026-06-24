@@ -14,4 +14,8 @@ module load miniconda
 conda activate homogeneityScore
 
 cd "/vast/palmer/pi/garg/Patrick/Homogeneity Score"
-python src/train.py
+# Args after the script name are passed through, e.g.:
+#   sbatch slurm/train.sbatch                       (per-region, from config)
+#   sbatch slurm/train.sbatch --aggregate           (summed-bin)
+#   sbatch slurm/train.sbatch --window 256 --no-aggregate
+python src/train.py "$@"
