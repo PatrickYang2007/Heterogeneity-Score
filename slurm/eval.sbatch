@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=eval_report
-#SBATCH --output=eval_report.%j.out
-#SBATCH --error=eval_report.%j.err
+#SBATCH --output=logs/eval_report.%j.out
+#SBATCH --error=logs/eval_report.%j.err
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=widen_windows
-#SBATCH --output=widen_windows.%j.out
-#SBATCH --error=widen_windows.%j.err
+#SBATCH --output=logs/widen_windows.%j.out
+#SBATCH --error=logs/widen_windows.%j.err
 #SBATCH --partition=ycga
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G

@@ -114,8 +114,9 @@ python src/predict.py data/test_w256.parquet \
 
 ```
 src/      Python modules (config, model, training, data prep)
-slurm/    Slurm submission scripts (.sbatch)
-Models/   saved checkpoints (*.pt) and their training logs
+slurm/    Slurm submission scripts (.sbatch); submit from the repo root
+Models/   saved checkpoints (*.pt), eval reports, and loss curves
+logs/     Slurm .out/.err job logs (git-ignored)
 data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
 ```
 

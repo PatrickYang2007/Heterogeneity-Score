@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=train_model
-#SBATCH --output=train_model.%j.out
-#SBATCH --error=train_model.%j.err
+#SBATCH --output=logs/train_model.%j.out
+#SBATCH --error=logs/train_model.%j.err
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4

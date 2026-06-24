@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=prepare_data
-#SBATCH --output=prepare_data.%j.out
-#SBATCH --error=prepare_data.%j.err
+#SBATCH --output=logs/prepare_data.%j.out
+#SBATCH --error=logs/prepare_data.%j.err
 #SBATCH --partition=ycga
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=aggregate_bins
-#SBATCH --output=aggregate_bins.%j.out
-#SBATCH --error=aggregate_bins.%j.err
+#SBATCH --output=logs/aggregate_bins.%j.out
+#SBATCH --error=logs/aggregate_bins.%j.err
 #SBATCH --partition=ycga
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
