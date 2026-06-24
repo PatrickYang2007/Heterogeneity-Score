@@ -1,5 +1,6 @@
 .claude/
 data/
+Models/
 __pycache__/
 *.out
 *.err
