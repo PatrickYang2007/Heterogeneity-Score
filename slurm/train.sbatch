@@ -11,6 +11,9 @@
 #SBATCH --mail-user=pattyyang1@gmail.com
 
 module load miniconda
+# Initialize conda's shell functions so `conda activate` doesn't emit a
+# "Run 'conda init' before 'conda deactivate'" warning to stderr.
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate homogeneityScore
 
 cd "/vast/palmer/pi/garg/Patrick/Homogeneity Score"
