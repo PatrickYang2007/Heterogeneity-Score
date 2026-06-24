@@ -8,10 +8,12 @@ from prepare_data import one_hot_encode
 
 
 def predict(weight_file, input_parquet, output_file,
-            num_filters=32, ker_size=5, dropout=0.3, batch_size=64):
+            num_filters=32, ker_size=5, dropout=0.3, batch_size=64, bounded=True):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size, num_filters=num_filters)
+    # bounded must match training: pass --aggregate for summed-bin model weights.
+    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+                                  num_filters=num_filters, bounded=bounded)
     model.load_state_dict(torch.load(weight_file, map_location=device))
     model = model.to(device)
     model.eval()
@@ -44,6 +46,8 @@ def main():
     parser.add_argument("--ker-size", type=int, default=5)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--aggregate", action="store_true",
+                        help="weights are from a summed-bin model (linear output, no sigmoid)")
     args = parser.parse_args()
 
     predict(
@@ -54,6 +58,7 @@ def main():
         ker_size=args.ker_size,
         dropout=args.dropout,
         batch_size=args.batch_size,
+        bounded=not args.aggregate,
     )
 
 

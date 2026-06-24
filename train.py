@@ -12,6 +12,15 @@ OUT_DIR = "."
 # (train_<split>.parquet); otherwise the wide files train_w{WINDOW}.parquet etc.
 WINDOW = 256
 
+# Summed-bin experiment toggle. Flip this to switch which idea you're training:
+#   AGGREGATE = False -> original per-region score, data/{split}_w{WINDOW}.parquet,
+#                        sigmoid output (label in [0, 1]). This is the default.
+#   AGGREGATE = True  -> summed-bin label from aggregate_bins.py,
+#                        data/{split}_agg{WINDOW}.parquet, linear output (the label
+#                        is a SUM of region scores, not bounded in [0, 1]).
+# Generate the matching data first (widen_windows.py vs aggregate_bins.py).
+AGGREGATE = False
+
 NUM_FILTERS = 32
 KER_SIZE = 5
 # Per-block max-pool factor. Use 2 for wide windows (grows receptive field);
@@ -28,12 +37,17 @@ BATCH_SIZE = 64
 
 
 def main():
-    suffix = f"_w{WINDOW}" if WINDOW else ""
+    if AGGREGATE:
+        suffix = f"_agg{WINDOW}"
+    else:
+        suffix = f"_w{WINDOW}" if WINDOW else ""
     train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE)
     val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE, shuffle = False)
 
+    # Summed-bin labels are unbounded, so drop the final sigmoid (bounded=False).
     model = HomogeneityScoreModel(dropout = DROPOUT, ker_size = KER_SIZE,
-                                  num_filters = NUM_FILTERS, pool = POOL)
+                                  num_filters = NUM_FILTERS, pool = POOL,
+                                  bounded = not AGGREGATE)
 
     trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=LR,
                       weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=PATIENCE,

@@ -72,11 +72,18 @@ class AttentionPool(nn.Module):
 
 
 class HomogeneityScoreModel(nn.Module):
-    def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32, pool=2):
+    def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32, pool=2,
+                 bounded=True):
         super().__init__()
         # pool=1 reproduces the old no-pooling behavior (sensible for 16 bp
         # inputs); pool=2 (default) halves length each block so wider windows
         # are summarized over progressively longer range.
+        #
+        # bounded=True applies a final sigmoid, squashing the output to [0, 1] for
+        # the per-region score label. Set bounded=False for the summed-bin label
+        # (aggregate_bins.py), whose value ranges ~0..#regions_in_bin and so needs
+        # a linear (unbounded) output instead.
+        self.bounded = bounded
         self.block1 = conv_block(in_channels, num_filters, ker_size, dropout, pool)
         self.block2 = conv_block(num_filters, num_filters * 2, ker_size, dropout, pool)
         self.block3 = conv_block(num_filters * 2, num_filters * 4, ker_size, dropout, pool)
@@ -89,4 +96,4 @@ class HomogeneityScoreModel(nn.Module):
         x = self.block3(x)
         x = self.pool(x)
         x = self.fc(x)
-        return torch.sigmoid(x)
+        return torch.sigmoid(x) if self.bounded else x
