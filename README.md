@@ -133,6 +133,7 @@ python src/predict.py data/test_w256.parquet \
 ```
 src/      Python modules (config, model, training, data prep)
 slurm/    Slurm submission scripts (.sbatch); submit from the repo root
+tests/    pytest test suite (uses synthetic data only)
 Models/   saved checkpoints (*.pt), eval reports, and loss curves
 logs/     Slurm .out/.err job logs (git-ignored)
 data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
@@ -148,8 +149,21 @@ data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
 | `src/model_train.py` | `Trainer` (training/validation loops, checkpointing) |
 | `src/train.py` | training entry point and hyperparameters |
 | `src/evaluate.py` | metrics (Pearson/Spearman) and scatter/loss plots |
+| `src/eval_report.py` | full eval report: metrics + diagnostic plots + summary |
 | `src/predict.py` | run inference on new sequences |
 | `slurm/*.sbatch` | Slurm submission scripts |
+
+## Tests
+
+A pytest suite covers the deterministic, easy-to-break parts: DNA encoding,
+`extract_window` centering/padding, the bin summing, model wiring (output shape,
+sigmoid vs linear head, configurable depth, and loading old checkpoints), the
+hand-rolled eval metrics, and `GenomicDataset`. The tests build their own small
+synthetic data, so no real genome/bedgraph files are needed.
+
+```bash
+sbatch slurm/test.sbatch     # CPU-only; installs pytest if missing
+```
 
 ## Notes
 
