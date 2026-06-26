@@ -43,11 +43,29 @@ sequence near a validation/test region during training:
 
 ## Model
 
-`HomogeneityScoreModel` (in `model.py`) is three pooled conv blocks
-(BatchNorm → GELU → Conv1d → Dropout → MaxPool) that grow the receptive field
-geometrically, followed by an attention-pooling layer and a linear head. Training
-uses AdamW, MSE loss, gradient clipping, `ReduceLROnPlateau`, and saves the
-checkpoint with the best validation Pearson correlation.
+`HomogeneityScoreModel` (in `src/model.py`) stacks `num_blocks` pooled conv
+blocks (BatchNorm → GELU → Conv1d → Dropout → MaxPool) that grow the receptive
+field geometrically, followed by an attention-pooling layer and a linear head.
+Channels double each block (`num_filters`, `num_filters*2`, ...). Training uses
+AdamW, MSE loss, gradient clipping, `ReduceLROnPlateau`, and saves the checkpoint
+with the best validation Pearson correlation.
+
+Model capacity is configurable without editing layers, via flags on `train.py`:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--num-filters` | width (channels in the first block) | 32 |
+| `--num-blocks` | depth (number of conv blocks) | 3 |
+
+```bash
+sbatch slurm/train.sbatch --num-blocks 5 --num-filters 64
+```
+
+Runs with non-default capacity save to a tagged checkpoint (e.g.
+`best_model_w2048_b5_f64.pt`) so sweeps don't overwrite each other. Pass the same
+`--num-filters`/`--num-blocks` to `eval_report.py`/`predict.py` when loading such
+a model. Note: with `pool=2` each block halves the length, so keep
+`num_blocks <= log2(WINDOW) - 2` (e.g. <= 9 for a 2048 bp window).
 
 ## Two experiments
 
