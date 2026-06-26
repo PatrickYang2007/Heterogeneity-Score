@@ -72,28 +72,41 @@ class AttentionPool(nn.Module):
 
 
 class HomogeneityScoreModel(nn.Module):
-    def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32, pool=2,
-                 bounded=True):
+    def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32,
+                 num_blocks=3, pool=2, bounded=True):
         super().__init__()
+        # Stack `num_blocks` conv blocks; channels double each block
+        # (num_filters, num_filters*2, num_filters*4, ...). Raise num_blocks for
+        # depth or num_filters for width to add capacity without editing layers.
+        #
         # pool=1 reproduces the old no-pooling behavior (sensible for 16 bp
-        # inputs); pool=2 (default) halves length each block so wider windows
-        # are summarized over progressively longer range.
+        # inputs); pool=2 (default) halves length each block, so the input length
+        # must stay > 2**num_blocks (e.g. <=9 blocks for a 2048 bp window).
         #
         # bounded=True applies a final sigmoid, squashing the output to [0, 1] for
         # the per-region score label. Set bounded=False for the summed-bin label
         # (aggregate_bins.py), whose value ranges ~0..#regions_in_bin and so needs
         # a linear (unbounded) output instead.
         self.bounded = bounded
-        self.block1 = conv_block(in_channels, num_filters, ker_size, dropout, pool)
-        self.block2 = conv_block(num_filters, num_filters * 2, ker_size, dropout, pool)
-        self.block3 = conv_block(num_filters * 2, num_filters * 4, ker_size, dropout, pool)
-        self.pool = AttentionPool(num_filters * 4)
-        self.fc = nn.Linear(num_filters * 4, 1)
+        self.num_blocks = num_blocks
+
+        self._blocks = []
+        dim = in_channels
+        for i in range(num_blocks):
+            out = num_filters * (2 ** i)
+            block = conv_block(dim, out, ker_size, dropout, pool)
+            # Register as block1, block2, ... so a 3-block/32-filter model keeps
+            # the same state_dict keys as before (old checkpoints still load).
+            setattr(self, f"block{i + 1}", block)
+            self._blocks.append(block)
+            dim = out
+
+        self.pool = AttentionPool(dim)
+        self.fc = nn.Linear(dim, 1)
 
     def forward(self, x):
-        x = self.block1(x)
-        x = self.block2(x)
-        x = self.block3(x)
+        for block in self._blocks:
+            x = block(x)
         x = self.pool(x)
         x = self.fc(x)
         return torch.sigmoid(x) if self.bounded else x

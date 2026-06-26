@@ -8,12 +8,15 @@ from prepare_data import one_hot_encode
 
 
 def predict(weight_file, input_parquet, output_file,
-            num_filters=32, ker_size=5, dropout=0.3, batch_size=64, bounded=True):
+            num_filters=32, num_blocks=3, ker_size=5, dropout=0.3, batch_size=64,
+            bounded=True):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # bounded must match training: pass --aggregate for summed-bin model weights.
+    # num_filters/num_blocks must match the trained model's width/depth.
     model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size,
-                                  num_filters=num_filters, bounded=bounded)
+                                  num_filters=num_filters, num_blocks=num_blocks,
+                                  bounded=bounded)
     model.load_state_dict(torch.load(weight_file, map_location=device))
     model = model.to(device)
     model.eval()
@@ -43,6 +46,8 @@ def main():
     parser.add_argument("--weights", default="best_model.pt", help="model weights file (default: best_model.pt)")
     parser.add_argument("--output", default="predictions.tsv", help="output TSV file (default: predictions.tsv)")
     parser.add_argument("--num-filters", type=int, default=32)
+    parser.add_argument("--num-blocks", type=int, default=3,
+                        help="must match the trained model's depth")
     parser.add_argument("--ker-size", type=int, default=5)
     parser.add_argument("--dropout", type=float, default=0.3)
     parser.add_argument("--batch-size", type=int, default=64)
@@ -55,6 +60,7 @@ def main():
         input_parquet=args.input_parquet,
         output_file=args.output,
         num_filters=args.num_filters,
+        num_blocks=args.num_blocks,
         ker_size=args.ker_size,
         dropout=args.dropout,
         batch_size=args.batch_size,

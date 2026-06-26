@@ -300,6 +300,8 @@ def main():
                    help="score threshold for binary ROC/PR (per-region only)")
     p.add_argument("--data-dir", default="data")
     p.add_argument("--num-filters", type=int, default=32)
+    p.add_argument("--num-blocks", type=int, default=3,
+                   help="must match the trained model's depth")
     p.add_argument("--ker-size", type=int, default=5)
     p.add_argument("--dropout", type=float, default=0.3)
     args = p.parse_args()
@@ -312,8 +314,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pool = 2 if args.window else 1
     model = HomogeneityScoreModel(dropout=args.dropout, ker_size=args.ker_size,
-                                  num_filters=args.num_filters, pool=pool,
-                                  bounded=not args.aggregate)
+                                  num_filters=args.num_filters, num_blocks=args.num_blocks,
+                                  pool=pool, bounded=not args.aggregate)
     model.load_state_dict(torch.load(args.weights, map_location=device))
     model = model.to(device)
     print(f"Loaded {args.weights} (device={device}, bounded={not args.aggregate})")
