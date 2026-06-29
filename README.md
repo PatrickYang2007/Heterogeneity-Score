@@ -138,7 +138,7 @@ sbatch slurm/train.sbatch            # -> Models/best_model_{w,agg}{WINDOW}.pt +
 sbatch slurm/eval.sbatch --weights Models/best_model_w2048.pt --window 2048
 
 python src/predict.py data/test_w2048.parquet \
-  --weights Models/best_model_w2048.pt --output preds.tsv
+  --weights Models/best_model_w2048.pt --window 2048 --output preds.tsv
 # add --aggregate when the weights came from a summed-bin model
 ```
 
