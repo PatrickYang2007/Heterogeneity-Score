@@ -30,6 +30,17 @@ def test_bounded_output_in_unit_interval():
     assert torch.all(out >= 0.0) and torch.all(out <= 1.0)
 
 
+def test_in_channels_configurable_for_region_mask():
+    # With the region-mask channel the input has 5 channels; the model's first
+    # conv must accept them and still produce a (batch, 1) output.
+    model = make_model(in_channels=5, num_filters=8, num_blocks=3, pool=2).eval()
+    out = model(torch.randn(4, 5, 64))
+    assert out.shape == (4, 1)
+    # the four-channel default must still work (backward compatible)
+    assert make_model(num_filters=8, num_blocks=3, pool=2).eval()(
+        torch.randn(4, 4, 64)).shape == (4, 1)
+
+
 def test_unbounded_output_runs():
     # linear head: just has to run and give the right shape (value unconstrained)
     model = make_model(num_filters=8, num_blocks=3, pool=2, bounded=False).eval()

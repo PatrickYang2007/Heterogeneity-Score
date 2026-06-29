@@ -3,20 +3,24 @@ import torch
 import numpy as np
 import pandas as pd
 
-from model import HeterogeneityScoreModel
+from model import HeterogeneityScoreModel, region_mask_channel
 from prepare_data import one_hot_encode
+from config import REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH
 
 
 def predict(weight_file, input_parquet, output_file,
             num_filters=32, num_blocks=3, ker_size=5, dropout=0.3, batch_size=64,
-            bounded=True, pool=2):
+            bounded=True, pool=2, region_mask=False, region_width=16):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # bounded must match training: pass --aggregate for summed-bin model weights.
     # num_filters/num_blocks must match the trained model's width/depth, and pool
     # must match too (pool=2 for windowed models, pool=1 for the raw 16 bp path);
-    # a mismatch changes the layer shapes and load_state_dict will fail.
+    # a mismatch changes the layer shapes and load_state_dict will fail. The
+    # region-mask channel must match too: a masked model takes in_channels=5.
+    in_channels = 5 if region_mask else 4
     model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+                                  in_channels=in_channels,
                                   num_filters=num_filters, num_blocks=num_blocks,
                                   pool=pool, bounded=bounded)
     model.load_state_dict(torch.load(weight_file, map_location=device))
@@ -27,6 +31,10 @@ def predict(weight_file, input_parquet, output_file,
     sequences = df["sequence"].str.upper().tolist()
     encoded = one_hot_encode(sequences)
     x = torch.from_numpy(encoded.transpose(0, 2, 1).astype("float32"))
+    if region_mask:
+        # Append the same central-region marker the dataset adds during training.
+        mask = region_mask_channel(x.shape[-1], region_width).expand(x.shape[0], 1, -1)
+        x = torch.cat([x, mask], dim=1)
 
     preds = []
     with torch.no_grad():
@@ -63,6 +71,9 @@ def main():
     # Match train.py / eval_report.py: any window pools by 2, the raw 16 bp path
     # (window unset / 0) uses no pooling.
     pool = 2 if args.window else 1
+    # Mirror train.py: the per-region path carries the region-mask channel; the
+    # summed-bin path does not. Must match how the weights were trained.
+    region_mask = CFG_REGION_MASK and not args.aggregate
 
     predict(
         weight_file=args.weights,
@@ -75,6 +86,8 @@ def main():
         batch_size=args.batch_size,
         bounded=not args.aggregate,
         pool=pool,
+        region_mask=region_mask,
+        region_width=CFG_REGION_WIDTH,
     )
 
 

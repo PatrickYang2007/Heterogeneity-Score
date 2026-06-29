@@ -9,7 +9,8 @@ import torch
 
 from model import HeterogeneityScoreModel, make_dataloader
 from trainer import Trainer
-from config import WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE
+from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
+                    REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH)
 
 
 def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
@@ -74,6 +75,12 @@ def main():
     # 1 falls back to the original no-pooling model for 16 bp inputs.
     pool = 2 if window else 1
 
+    # Region-mask channel only applies to the per-region path (the summed-bin
+    # label has no single region to mark). When on, the input gains a 5th channel,
+    # so the model's first conv must take in_channels=5.
+    region_mask = CFG_REGION_MASK and not aggregate
+    in_channels = 5 if region_mask else 4
+
     # Data suffix depends only on window/aggregate (architecture doesn't change
     # the data). The arch tag is appended to OUTPUT names only when capacity is
     # non-default, so complexity sweeps get distinct checkpoints without
@@ -85,17 +92,24 @@ def main():
     arch = ""
     if (num_blocks, num_filters) != (NUM_BLOCKS, NUM_FILTERS):
         arch = f"_b{num_blocks}_f{num_filters}"
+    # Mask runs save under a distinct name so they don't overwrite (or get
+    # confused with) the no-mask baseline's checkpoint and loss curve.
+    feat = "_mask" if region_mask else ""
     print(f"Training: window={window}  aggregate={aggregate}  "
-          f"blocks={num_blocks}  filters={num_filters}  -> data{suffix}.parquet")
+          f"blocks={num_blocks}  filters={num_filters}  region_mask={region_mask}  "
+          f"-> data{suffix}.parquet")
 
-    train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE)
-    val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE, shuffle = False)
+    train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE,
+                                   region_mask = region_mask, region_width = CFG_REGION_WIDTH)
+    val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE,
+                                 shuffle = False, region_mask = region_mask,
+                                 region_width = CFG_REGION_WIDTH)
 
     # Each experiment saves to its own checkpoint/plot under Models/ so parallel
     # runs don't overwrite each other (e.g. best_model_w2048.pt vs _agg2048.pt,
     # or best_model_w2048_b5_f64.pt for a deeper/wider sweep).
     os.makedirs(OUT_DIR, exist_ok=True)
-    checkpoint_path = f"{OUT_DIR}/best_model{suffix}{arch}.pt"
+    checkpoint_path = f"{OUT_DIR}/best_model{suffix}{arch}{feat}.pt"
 
     # Summed-bin labels are unbounded, so drop the final sigmoid (bounded=False)
     # and skip the target clipping / bias seeding (those only make sense for the
@@ -114,6 +128,7 @@ def main():
               f"logit({mean:.4f})={bias_init:.4f}")
 
     model = HeterogeneityScoreModel(dropout = DROPOUT, ker_size = KER_SIZE,
+                                  in_channels = in_channels,
                                   num_filters = num_filters, num_blocks = num_blocks,
                                   pool = pool, bounded = bounded, bias_init = bias_init)
 
@@ -124,7 +139,7 @@ def main():
     train_losses, val_losses = trainer.fit()
 
     plot_loss_curves(train_losses, val_losses, out_dir=OUT_DIR,
-                     filename=f"loss_curves{suffix}{arch}.png")
+                     filename=f"loss_curves{suffix}{arch}{feat}.png")
     print(f"best val pearson: {trainer.best_val_corr:.4f}  (val loss at that epoch tracked separately)")
     print(f"model saved to {checkpoint_path}")
 

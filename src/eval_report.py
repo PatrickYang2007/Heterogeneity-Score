@@ -36,6 +36,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr, rankdata
 
 from model import HeterogeneityScoreModel, make_dataloader
+from config import REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH
 
 
 # ----------------------------- metrics (numpy) -----------------------------
@@ -230,9 +231,11 @@ def plot_roc_pr(preds, targets, threshold, split, out_dir):
 
 # ----------------------------- driver -----------------------------
 
-def evaluate_split(model, split, parquet, device, threshold, bounded, out_dir):
+def evaluate_split(model, split, parquet, device, threshold, bounded, out_dir,
+                   region_mask=False, region_width=16):
     print(f"[{split}] {parquet}")
-    loader = make_dataloader(parquet, shuffle=False)
+    loader = make_dataloader(parquet, shuffle=False,
+                             region_mask=region_mask, region_width=region_width)
     preds, targets = get_predictions(model, loader, device)
     chroms = pd.read_parquet(parquet, columns=["chrom"])["chrom"].to_numpy()
 
@@ -313,7 +316,12 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pool = 2 if args.window else 1
+    # Mirror train.py: per-region weights carry the region-mask channel (5 input
+    # channels), the summed-bin path does not.
+    region_mask = CFG_REGION_MASK and not args.aggregate
+    in_channels = 5 if region_mask else 4
     model = HeterogeneityScoreModel(dropout=args.dropout, ker_size=args.ker_size,
+                                  in_channels=in_channels,
                                   num_filters=args.num_filters, num_blocks=args.num_blocks,
                                   pool=pool, bounded=not args.aggregate)
     model.load_state_dict(torch.load(args.weights, map_location=device))
@@ -327,7 +335,9 @@ def main():
             print(f"[{split}] {parquet} missing, skipping")
             continue
         results[split] = evaluate_split(model, split, parquet, device,
-                                        args.threshold, not args.aggregate, out_dir)
+                                        args.threshold, not args.aggregate, out_dir,
+                                        region_mask=region_mask,
+                                        region_width=CFG_REGION_WIDTH)
 
     with open(f"{out_dir}/metrics.json", "w") as f:
         json.dump(results, f, indent=2)

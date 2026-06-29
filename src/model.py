@@ -8,8 +8,22 @@ import numpy as np
 from prepare_data import encode_indices
 
 
+def region_mask_channel(length, region_width):
+    """A (1, length) tensor that is 1.0 over the central `region_width` positions.
+
+    Marks where the labeled 16 bp region sits inside a widened, region-centered
+    window so the model gets explicit position information a translation-invariant
+    conv stack otherwise lacks. Shared by GenomicDataset (training/val) and
+    predict.py so the extra channel is built identically everywhere.
+    """
+    mask = torch.zeros(1, length)
+    lo = length // 2 - region_width // 2
+    mask[0, lo:lo + region_width] = 1.0
+    return mask
+
+
 class GenomicDataset(Dataset):
-    def __init__(self, parquet_path):
+    def __init__(self, parquet_path, region_mask=False, region_width=16):
         df = pd.read_parquet(parquet_path, columns=["sequence", "score"])
         sequences = df["sequence"].str.upper().tolist()
         # Store sequences as compact int8 indices (A/C/G/T=0-3, N/other=4) and
@@ -19,6 +33,12 @@ class GenomicDataset(Dataset):
         # whereas int8 indices are ~1-2 GB.
         self.x = torch.from_numpy(encode_indices(sequences))
         self.y = torch.tensor(df["score"].values, dtype=torch.float32)
+        # Optional 5th channel marking the central region. It's identical for
+        # every row (windows are region-centered), so build it once here and
+        # concatenate in __getitem__ rather than rebuilding it per access.
+        self.region_mask = region_mask
+        self._mask = (region_mask_channel(self.x.shape[1], region_width)
+                      if region_mask else None)
 
     def __len__(self):
         return len(self.y)
@@ -27,11 +47,15 @@ class GenomicDataset(Dataset):
         idx_seq = self.x[idx].long()                       # (L,) values 0-4
         onehot = F.one_hot(idx_seq.clamp(max=3), num_classes=4).float()
         onehot[idx_seq == 4] = 0.0                          # N -> all-zero vector
-        return onehot.transpose(0, 1), self.y[idx]          # (4, L)
+        x = onehot.transpose(0, 1)                          # (4, L)
+        if self.region_mask:
+            x = torch.cat([x, self._mask], dim=0)           # (5, L)
+        return x, self.y[idx]
 
 
-def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4):
-    ds = GenomicDataset(parquet_path)
+def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4,
+                    region_mask = False, region_width = 16):
+    ds = GenomicDataset(parquet_path, region_mask=region_mask, region_width=region_width)
     return DataLoader(ds, batch_size = batch_size, shuffle = shuffle,
                       num_workers = num_workers, pin_memory = True)
 

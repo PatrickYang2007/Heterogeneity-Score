@@ -4,7 +4,7 @@ shape and N handling. Uses a tiny temp parquet, no real data.
 import pandas as pd
 import pytest
 
-from model import GenomicDataset
+from model import GenomicDataset, region_mask_channel
 
 
 @pytest.fixture
@@ -47,3 +47,22 @@ def test_lowercase_is_upper_cased(tiny_parquet):
     ds = GenomicDataset(tiny_parquet)
     x, _ = ds[2]                                  # "acgt" -> treated as ACGT
     assert x[:, 0].tolist() == [1, 0, 0, 0]
+
+
+def test_region_mask_adds_fifth_channel(tiny_parquet):
+    # region_mask=True appends a 5th channel marking the central region_width
+    # positions; the four base channels are unchanged.
+    ds = GenomicDataset(tiny_parquet, region_mask=True, region_width=2)
+    x, _ = ds[0]                                  # "ACGT" -> length 4
+    assert tuple(x.shape) == (5, 4)              # (4 base + 1 mask, length)
+    assert x[:4, 0].tolist() == [1, 0, 0, 0]     # base channels intact (A)
+    # central region_width=2 of length 4 -> positions [1, 3): cols 1 and 2 set
+    assert x[4].tolist() == [0, 1, 1, 0]
+
+
+def test_region_mask_channel_helper_centers_region():
+    mask = region_mask_channel(length=10, region_width=4)
+    assert tuple(mask.shape) == (1, 10)
+    # central 4 of 10 -> positions [3, 7)
+    assert mask[0].tolist() == [0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
+    assert mask.sum().item() == 4.0
