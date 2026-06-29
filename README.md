@@ -83,7 +83,8 @@ a model. Note: with `pool=2` each block halves the length, so keep
 ## Two experiments
 
 The repo supports two ways of relating sequence to score, toggled by the
-`AGGREGATE` flag in `train.py`:
+`AGGREGATE` flag in `src/config.py` (or `--aggregate`/`--no-aggregate` on
+`train.py`):
 
 | | Per-region (default) | Summed-bin |
 |---|---|---|

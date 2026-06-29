@@ -15,8 +15,8 @@ Binning is O(n): each region computes its own bin id from its center
 there is no neighbor searching.
 
 This is a separate, optional path. It writes data/{split}_agg{WINDOW}.parquet and
-leaves the normal train/val/test{_w*}.parquet files untouched. Flip AGGREGATE in
-train.py to train on these instead.
+leaves the normal train/val/test{_w*}.parquet files untouched. Set AGGREGATE in
+config.py (or pass --aggregate to train.py) to train on these instead.
 
 Note: the label is a SUM (range ~0..#regions_in_bin), so it is NOT bounded in
 [0,1] like a per-region score. The model must be built with bounded=False so its
