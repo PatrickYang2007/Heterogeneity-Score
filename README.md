@@ -1,6 +1,6 @@
-# Homogeneity Score
+# Heterogeneity Score
 
-A 1D convolutional neural network that predicts a per-region "homogeneity score"
+A 1D convolutional neural network that predicts a per-region "heterogeneity score"
 directly from genomic DNA sequence. The model is trained on a bedgraph of scored
 regions, with a chromosome-level train/val/test split, and is built in PyTorch.
 
@@ -43,7 +43,7 @@ sequence near a validation/test region during training:
 
 ## Model
 
-`HomogeneityScoreModel` (in `src/model.py`) stacks `num_blocks` pooled conv
+`HeterogeneityScoreModel` (in `src/model.py`) stacks `num_blocks` pooled conv
 blocks (BatchNorm → GELU → Conv1d → Dropout → MaxPool) that grow the receptive
 field geometrically, followed by an attention-pooling layer and a linear head.
 Channels double each block (`num_filters`, `num_filters*2`, ...). Training uses

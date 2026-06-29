@@ -1,4 +1,4 @@
-"""Tests for HomogeneityScoreModel plumbing.
+"""Tests for HeterogeneityScoreModel plumbing.
 
 These don't test that the model *learns* (that's stochastic and slow); they pin
 down the wiring that silently breaks training or checkpoint loading: output
@@ -9,12 +9,12 @@ state_dict keys stay compatible with existing checkpoints.
 import torch
 import pytest
 
-from model import HomogeneityScoreModel
+from model import HeterogeneityScoreModel
 
 
 def make_model(**kw):
     kw.setdefault("dropout", 0.0)
-    return HomogeneityScoreModel(**kw)
+    return HeterogeneityScoreModel(**kw)
 
 
 def test_forward_output_shape():

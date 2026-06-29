@@ -71,9 +71,9 @@ class AttentionPool(nn.Module):
         return output
 
 
-class HomogeneityScoreModel(nn.Module):
+class HeterogeneityScoreModel(nn.Module):
     def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32,
-                 num_blocks=3, pool=2, bounded=True):
+                 num_blocks=3, pool=2, bounded=True, bias_init=None):
         super().__init__()
         # Stack `num_blocks` conv blocks; channels double each block
         # (num_filters, num_filters*2, num_filters*4, ...). Raise num_blocks for
@@ -108,6 +108,17 @@ class HomogeneityScoreModel(nn.Module):
 
         self.pool = AttentionPool(dim)
         self.fc = nn.Linear(dim, 1)
+
+        # Seed the output bias so a bounded (sigmoid) model starts at the label
+        # mean instead of sigmoid(0)=0.5. With a 0 bias the output begins at 0.5,
+        # far from the ~0.76 mean, so the optimizer cuts loss by cranking the
+        # logit up toward the saturating upper rail where sigmoid'(z)->0; the
+        # gradient then vanishes and the model freezes as a constant ~1.0 (zero
+        # output variance -> undefined Pearson). bias_init = logit(mean) starts
+        # the output on the steep part of the curve. Ignored for the linear
+        # (bounded=False) head, whose bias has no logit interpretation.
+        if self.bounded and bias_init is not None:
+            nn.init.constant_(self.fc.bias, bias_init)
 
     def forward(self, x):
         if self._pool_factor > 1:

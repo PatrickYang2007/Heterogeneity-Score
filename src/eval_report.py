@@ -35,7 +35,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr, rankdata
 
-from model import HomogeneityScoreModel, make_dataloader
+from model import HeterogeneityScoreModel, make_dataloader
 
 
 # ----------------------------- metrics (numpy) -----------------------------
@@ -255,7 +255,7 @@ def write_summary(results, out_dir, args, suffix):
     """Write a small human-readable summary.txt alongside the plots."""
     lines = []
     lines.append("=" * 60)
-    lines.append("  HOMOGENEITY SCORE - EVALUATION SUMMARY")
+    lines.append("  HETEROGENEITY SCORE - EVALUATION SUMMARY")
     lines.append("=" * 60)
     lines.append(f"weights      : {args.weights}")
     lines.append(f"data         : data/{{split}}{suffix}.parquet")
@@ -313,7 +313,7 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pool = 2 if args.window else 1
-    model = HomogeneityScoreModel(dropout=args.dropout, ker_size=args.ker_size,
+    model = HeterogeneityScoreModel(dropout=args.dropout, ker_size=args.ker_size,
                                   num_filters=args.num_filters, num_blocks=args.num_blocks,
                                   pool=pool, bounded=not args.aggregate)
     model.load_state_dict(torch.load(args.weights, map_location=device))

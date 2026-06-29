@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr
 
-from model import HomogeneityScoreModel, make_dataloader
+from model import HeterogeneityScoreModel, make_dataloader
 
 
 def get_predictions(model, loader, device):
@@ -58,7 +58,7 @@ def evaluate(weight_file, test_parquet, val_parquet, out_dir=".",
 
     # bounded must match how the model was trained: False for summed-bin
     # (aggregate) weights, True for the per-region score model.
-    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+    model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
                                   num_filters=num_filters, pool=pool, bounded=bounded)
     model.load_state_dict(torch.load(weight_file, map_location=device))
     model = model.to(device)

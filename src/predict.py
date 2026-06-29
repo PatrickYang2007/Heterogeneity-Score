@@ -3,7 +3,7 @@ import torch
 import numpy as np
 import pandas as pd
 
-from model import HomogeneityScoreModel
+from model import HeterogeneityScoreModel
 from prepare_data import one_hot_encode
 
 
@@ -14,7 +14,7 @@ def predict(weight_file, input_parquet, output_file,
 
     # bounded must match training: pass --aggregate for summed-bin model weights.
     # num_filters/num_blocks must match the trained model's width/depth.
-    model = HomogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+    model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
                                   num_filters=num_filters, num_blocks=num_blocks,
                                   bounded=bounded)
     model.load_state_dict(torch.load(weight_file, map_location=device))
@@ -41,7 +41,7 @@ def predict(weight_file, input_parquet, output_file,
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run inference with a trained HomogeneityScoreModel")
+    parser = argparse.ArgumentParser(description="Run inference with a trained HeterogeneityScoreModel")
     parser.add_argument("input_parquet", help="parquet file with sequence (and optionally score) columns")
     parser.add_argument("--weights", default="best_model.pt", help="model weights file (default: best_model.pt)")
     parser.add_argument("--output", default="predictions.tsv", help="output TSV file (default: predictions.tsv)")
