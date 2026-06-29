@@ -27,11 +27,24 @@ evaluate.py / predict.py
 
 ## Data representation
 
-Each raw region is 16 bp with a single score (0–1). Because 16 bp is too little
-context for the model to learn from, `widen_windows.py` re-extracts a wider
-window (default **256 bp**) centered on each region's midpoint, padding with `N`
-at chromosome ends. The score stays pinned to the original region — the extra
-flanking bases are context only. Sequences are one-hot encoded
+How sequence and score are presented to the model is **a choice, not a fixed
+property of the data** — it's set in `src/config.py` and regenerated per run, so
+the description below is the *default* configuration, not the only one.
+
+The raw input is fixed by the bedgraph: each region is 16 bp with a single score
+(0–1). Everything downstream is configurable:
+
+- **Window width** (`WINDOW` in `src/config.py`, currently **2048 bp**; set to
+  `None` to keep the raw 16 bp). 16 bp is too little context to learn from, so
+  `widen_windows.py` re-extracts a wider window centered on each region's
+  midpoint, padding with `N` at chromosome ends. Re-run it to change the width.
+- **Label / representation** (`AGGREGATE` in `src/config.py`). `False` keeps the
+  per-region score pinned to its original region (the flanking bases are context
+  only); `True` switches to a summed-bin label on a different scale. See
+  [Two experiments](#two-experiments) — this changes both the data file and the
+  model's output head.
+
+The DNA encoding itself is fixed in code: sequences are one-hot encoded
 (`A/C/G/T` → 4-dim, `N` → all-zero) into a `4 × L` tensor.
 
 The split is by **whole chromosome** (not random rows) so the model never sees

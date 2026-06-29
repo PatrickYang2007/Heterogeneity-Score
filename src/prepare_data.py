@@ -5,6 +5,8 @@ import subprocess
 import os
 from collections import defaultdict
 
+from config import WINDOW
+
 
 def one_hot_encode(sequences):
     mapping = {
@@ -177,13 +179,13 @@ MACS2_CUTOFF = 0.75
 MACS2_MIN_LENGTH = 200
 MACS2_MAX_GAP = 100
 
-# Sequence window width fed to the model. The raw regions are 16 bp, which is
-# too short to carry much regulatory context; widening symmetrically around
-# each region's center gives the model flanking sequence (motif syntax, GC/CpG
-# content) while keeping the same per-region score as the label. Set to None to
-# keep the original 16 bp regions. To re-extract wider windows from the EXISTING
-# splits without re-running MACS2, use widen_windows.py instead.
-WINDOW = 256
+# Sequence window width fed to the model is imported from config.py (the single
+# source of truth shared with widen_windows.py / train.py). The raw regions are
+# 16 bp, too short to carry much regulatory context; widening symmetrically
+# around each region's center gives flanking sequence while keeping the same
+# per-region score as the label. Set WINDOW=None in config.py to keep the
+# original 16 bp regions. To re-extract wider windows from the EXISTING splits
+# without re-running MACS2, use widen_windows.py instead.
 
 
 def main():
