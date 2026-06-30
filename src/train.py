@@ -10,7 +10,10 @@ import torch
 from model import HeterogeneityScoreModel, make_dataloader
 from trainer import Trainer
 from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
-                    REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH)
+                    REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH,
+                    BALANCE_SPIKE as CFG_BALANCE_SPIKE,
+                    SPIKE_THRESHOLD as CFG_SPIKE_THRESHOLD,
+                    SPIKE_KEEP_FRAC as CFG_SPIKE_KEEP_FRAC)
 
 
 def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
@@ -63,6 +66,16 @@ def parse_args():
                         help=f"width: first-block channels (default {NUM_FILTERS})")
     parser.add_argument("--num-blocks", type=int, default=NUM_BLOCKS,
                         help=f"depth: number of conv blocks (default {NUM_BLOCKS})")
+    # Train-only spike rebalancing (per-region path); defaults from config.py.
+    parser.add_argument("--balance", dest="balance", action="store_true",
+                        help="thin the score>=threshold spike in the TRAIN split")
+    parser.add_argument("--no-balance", dest="balance", action="store_false",
+                        help="train on the real (unbalanced) distribution")
+    parser.set_defaults(balance=CFG_BALANCE_SPIKE)
+    parser.add_argument("--cap-frac", type=float, default=CFG_SPIKE_KEEP_FRAC,
+                        help=f"fraction of spike rows to keep (default {CFG_SPIKE_KEEP_FRAC})")
+    parser.add_argument("--cap-threshold", type=float, default=CFG_SPIKE_THRESHOLD,
+                        help=f"score >= this is the spike to thin (default {CFG_SPIKE_THRESHOLD})")
     return parser.parse_args()
 
 
@@ -70,6 +83,9 @@ def main():
     args = parse_args()
     window, aggregate = args.window, args.aggregate
     num_filters, num_blocks = args.num_filters, args.num_blocks
+    # Spike rebalancing only makes sense for the bounded per-region label (the
+    # summed-bin label has no 1.0 pile-up), so force it off in aggregate mode.
+    balance = args.balance and not aggregate
 
     # Per-block max-pool factor. Use 2 for wide windows (grows receptive field);
     # 1 falls back to the original no-pooling model for 16 bp inputs.
@@ -93,14 +109,23 @@ def main():
     if (num_blocks, num_filters) != (NUM_BLOCKS, NUM_FILTERS):
         arch = f"_b{num_blocks}_f{num_filters}"
     # Mask runs save under a distinct name so they don't overwrite (or get
-    # confused with) the no-mask baseline's checkpoint and loss curve.
+    # confused with) the no-mask baseline's checkpoint and loss curve. Balanced
+    # runs get their own tag too (e.g. _bal30 = spike thinned to 30% kept).
     feat = "_mask" if region_mask else ""
+    if balance:
+        feat += f"_bal{int(round(args.cap_frac * 100))}"
     print(f"Training: window={window}  aggregate={aggregate}  "
           f"blocks={num_blocks}  filters={num_filters}  region_mask={region_mask}  "
-          f"-> data{suffix}.parquet")
+          f"balance={balance}"
+          + (f" (keep {args.cap_frac:g} of score>={args.cap_threshold:g})" if balance else "")
+          + f"  -> data{suffix}.parquet")
 
+    # Balancing thins only the TRAIN spike; val keeps the real distribution so its
+    # loss/Pearson stay comparable to non-balanced runs.
     train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE,
-                                   region_mask = region_mask, region_width = CFG_REGION_WIDTH)
+                                   region_mask = region_mask, region_width = CFG_REGION_WIDTH,
+                                   balance = balance, cap_threshold = args.cap_threshold,
+                                   cap_frac = args.cap_frac)
     val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE,
                                  shuffle = False, region_mask = region_mask,
                                  region_width = CFG_REGION_WIDTH)

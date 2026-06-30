@@ -4,7 +4,7 @@ shape and N handling. Uses a tiny temp parquet, no real data.
 import pandas as pd
 import pytest
 
-from model import GenomicDataset, region_mask_channel
+from model import GenomicDataset, region_mask_channel, downsample_spike
 
 
 @pytest.fixture
@@ -66,3 +66,38 @@ def test_region_mask_channel_helper_centers_region():
     # central 4 of 10 -> positions [3, 7)
     assert mask[0].tolist() == [0, 0, 0, 1, 1, 1, 1, 0, 0, 0]
     assert mask.sum().item() == 4.0
+
+
+# ----------------------------- spike rebalancing -----------------------------
+
+def _spike_df(n_spike=80, n_low=20):
+    return pd.DataFrame({
+        "sequence": ["ACGT"] * (n_spike + n_low),
+        "score": [1.0] * n_spike + [0.5] * n_low,
+    })
+
+
+def test_downsample_spike_keeps_all_below_and_fraction_of_spike():
+    out = downsample_spike(_spike_df(80, 20), threshold=1.0, keep_frac=0.25, seed=0)
+    assert (out["score"] < 1.0).sum() == 20          # every below-threshold row kept
+    assert (out["score"] >= 1.0).sum() == 20         # 80 spike rows -> 25% kept
+    assert len(out) == 40
+
+
+def test_downsample_spike_is_seeded_and_reproducible():
+    a = downsample_spike(_spike_df(), threshold=1.0, keep_frac=0.25, seed=7)
+    b = downsample_spike(_spike_df(), threshold=1.0, keep_frac=0.25, seed=7)
+    assert a.equals(b)
+
+
+def test_downsample_spike_noop_when_frac_none_or_full():
+    assert len(downsample_spike(_spike_df(), 1.0, None)) == 100
+    assert len(downsample_spike(_spike_df(), 1.0, 1.0)) == 100
+
+
+def test_genomic_dataset_balance_flag_thins_spike(tmp_path):
+    # balance=False (default) keeps all rows; balance=True thins the 1.0 spike.
+    path = str(tmp_path / "spike.parquet")
+    _spike_df(8, 2).to_parquet(path)               # 8 rows at 1.0, 2 below
+    assert len(GenomicDataset(path)) == 10
+    assert len(GenomicDataset(path, balance=True, cap_frac=0.5)) == 6  # 4 spike + 2 low

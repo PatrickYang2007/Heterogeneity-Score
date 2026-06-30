@@ -36,3 +36,16 @@ REGION_MASK = True
 # bedgraph regions are 16 bp, and widen_windows.py centers the window on the
 # region midpoint, so the region occupies the central REGION_WIDTH positions.
 REGION_WIDTH = 16
+
+# Train-only class rebalancing (per-region path). The per-region labels pile up
+# at exactly 1.0 (~41% of rows); under MSE that spike dominates the gradient and
+# drags predictions toward the high mean (range compression / regression to the
+# mean). When BALANCE_SPIKE is True, the TRAIN split thins the
+# score>=SPIKE_THRESHOLD pile-up down to SPIKE_KEEP_FRAC of its rows so the model
+# optimizes against a flatter score distribution. Only the training data is
+# touched -- val/test always keep the real distribution so their metrics stay
+# comparable to non-balanced runs. Overridable per run with
+# --balance/--no-balance and --cap-frac on train.py.
+BALANCE_SPIKE = False
+SPIKE_THRESHOLD = 1.0   # rows with score >= this are the spike to thin
+SPIKE_KEEP_FRAC = 0.3   # fraction of spike rows to keep (0.3 -> ~41% spike becomes ~17%)
