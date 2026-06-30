@@ -105,6 +105,26 @@ regions whose center falls inside it. Because the label is a sum (range
 MSE/loss values are **not** comparable between the two modes because the labels
 live on different scales — compare them by Pearson/Spearman correlation instead.
 
+## Class imbalance (per-region)
+
+The per-region labels are bounded [0, 1] but **pile up at exactly 1.0** (~41% of
+rows). Under MSE that spike dominates the gradient and pulls predictions toward
+the high mean, compressing the output's dynamic range (a pred-vs-observed
+best-fit slope well below 1). The sigmoid head + `TARGET_CLIP` and the output-bias
+seeding (both in `train.py`) already lean against this; `BALANCE_SPIKE` in
+`src/config.py` adds an optional, more direct lever:
+
+- `BALANCE_SPIKE` (`--balance` / `--no-balance`, default **off**) thins the
+  `score >= SPIKE_THRESHOLD` pile-up down to `SPIKE_KEEP_FRAC` (`--cap-frac`) of
+  its rows. **Only the training split is rebalanced** — val/test always keep the
+  real distribution, so their metrics stay comparable across runs. Ignored for
+  the summed-bin (`AGGREGATE`) path, which has no 1.0 spike.
+
+Balanced runs save under a `_bal{pct}` checkpoint tag (e.g.
+`best_model_w2048_b5_f64_mask_bal30.pt` keeps 30% of the spike), so they don't
+overwrite the unbalanced baseline. Pass the matching `--balance`/`--cap-frac`
+only at train time; `eval_report.py`/`predict.py` need no balancing flags.
+
 ## Usage
 
 Dependencies: `torch`, `pandas`, `numpy`, `pyfaidx`, `scipy`, `matplotlib`, and
@@ -130,6 +150,7 @@ sbatch slurm/aggregate_bins.sbatch   # -> data/{split}_agg{WINDOW}.parquet
 After the matching data exists for the current `WINDOW`/`AGGREGATE`:
 ```bash
 sbatch slurm/train.sbatch            # -> Models/best_model_{w,agg}{WINDOW}.pt + loss curve
+sbatch slurm/train.sbatch --balance  # per-region: thin the score=1.0 spike (train only)
 ```
 
 ### 3. Evaluate / predict
@@ -155,7 +176,7 @@ data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
 
 | File | Purpose |
 |---|---|
-| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`) |
+| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`, `REGION_MASK`, `BALANCE_SPIKE`) |
 | `src/prepare_data.py` | bedgraph → sequences, MACS2 peak filter, chrom split, parquet |
 | `src/widen_windows.py` | re-extract wider context windows from existing splits |
 | `src/aggregate_bins.py` | summed-bin experiment: tile genome, sum scores per bin |
