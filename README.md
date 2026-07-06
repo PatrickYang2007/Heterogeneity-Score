@@ -60,8 +60,9 @@ sequence near a validation/test region during training:
 blocks (BatchNorm → GELU → Conv1d → Dropout → MaxPool) that grow the receptive
 field geometrically, followed by an attention-pooling layer and a linear head.
 Channels double each block (`num_filters`, `num_filters*2`, ...). Training uses
-AdamW, MSE loss, gradient clipping, `ReduceLROnPlateau`, and saves the checkpoint
-with the best validation Pearson correlation.
+AdamW, MSE loss, gradient clipping, and `ReduceLROnPlateau`, and saves the
+checkpoint at the best (lowest) validation loss; the best validation Pearson
+correlation seen is also logged at the end of the run.
 
 Model capacity is configurable without editing layers, via flags on `train.py`:
 

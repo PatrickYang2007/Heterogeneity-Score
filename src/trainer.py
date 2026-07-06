@@ -34,17 +34,21 @@ class Trainer:
         self.best_val_loss = float('inf')
         self.best_val_corr = float('-inf')
 
+    def _clip_target(self, y):
+        """Squash the regression target into label_clip, or pass it through when
+        clipping is disabled (unbounded linear head)."""
+        return y.clamp(*self.label_clip) if self.label_clip is not None else y
+
     def train_epoch(self):
         self.model.train()
         total_loss = 0.0
 
         for x, y in self.train_loader:
             x, y = x.to(self.device), y.to(self.device)
-            if self.label_clip is not None:
-                y = y.clamp(*self.label_clip)
+            target = self._clip_target(y)
             self.optimizer.zero_grad()
             preds = self.model(x).squeeze(1)
-            loss = self.loss_fn(preds, y)
+            loss = self.loss_fn(preds, target)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.optimizer.step()
@@ -61,7 +65,7 @@ class Trainer:
             for x, y in self.val_loader:
                 x, y = x.to(self.device), y.to(self.device)
                 preds = self.model(x).squeeze(1)
-                target = y.clamp(*self.label_clip) if self.label_clip is not None else y
+                target = self._clip_target(y)
                 total_loss += self.loss_fn(preds, target).item()
                 all_preds.extend(preds.cpu().tolist())
                 # Pearson is reported against the true (unclipped) labels so it

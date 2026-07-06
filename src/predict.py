@@ -1,11 +1,11 @@
 import argparse
 import torch
-import numpy as np
 import pandas as pd
 
-from model import HeterogeneityScoreModel, region_mask_channel
+from model import load_model, region_mask_channel
 from prepare_data import one_hot_encode
-from config import REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH
+from config import (REGION_WIDTH as CFG_REGION_WIDTH,
+                    pool_for_window, region_mask_enabled, in_channels_for)
 
 
 def predict(weight_file, input_parquet, output_file,
@@ -18,14 +18,9 @@ def predict(weight_file, input_parquet, output_file,
     # must match too (pool=2 for windowed models, pool=1 for the raw 16 bp path);
     # a mismatch changes the layer shapes and load_state_dict will fail. The
     # region-mask channel must match too: a masked model takes in_channels=5.
-    in_channels = 5 if region_mask else 4
-    model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
-                                  in_channels=in_channels,
-                                  num_filters=num_filters, num_blocks=num_blocks,
-                                  pool=pool, bounded=bounded)
-    model.load_state_dict(torch.load(weight_file, map_location=device))
-    model = model.to(device)
-    model.eval()
+    model = load_model(weight_file, device, in_channels=in_channels_for(region_mask),
+                       num_filters=num_filters, num_blocks=num_blocks,
+                       ker_size=ker_size, dropout=dropout, pool=pool, bounded=bounded)
 
     df = pd.read_parquet(input_parquet)
     sequences = df["sequence"].str.upper().tolist()
@@ -69,11 +64,11 @@ def main():
     args = parser.parse_args()
 
     # Match train.py / eval_report.py: any window pools by 2, the raw 16 bp path
-    # (window unset / 0) uses no pooling.
-    pool = 2 if args.window else 1
-    # Mirror train.py: the per-region path carries the region-mask channel; the
-    # summed-bin path does not. Must match how the weights were trained.
-    region_mask = CFG_REGION_MASK and not args.aggregate
+    # (window unset / 0) uses no pooling. The per-region path carries the
+    # region-mask channel; the summed-bin path does not. Must match how the
+    # weights were trained.
+    pool = pool_for_window(args.window)
+    region_mask = region_mask_enabled(args.aggregate)
 
     predict(
         weight_file=args.weights,
