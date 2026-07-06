@@ -6,10 +6,42 @@ import torch.nn as nn
 from scipy.stats import pearsonr
 
 
+def inverse_density_weights(y, num_bins=50, clip=(0.1, 10.0), smooth=1.0):
+    """Build a score->weight lookup that upweights rare score values.
+
+    The per-region labels are heavily imbalanced: ~41% pile up at 1.0 while the
+    low-score tail is sparse. Under plain MSE every row contributes equally, so
+    the dense high-score region dominates the gradient and the model regresses
+    toward the mean (compressed output range, best-fit slope well below 1).
+
+    Weighting each row by the inverse frequency of its score bin makes the rare
+    low-score examples contribute as much total gradient as the common ones,
+    countering the compression WITHOUT discarding data the way spike
+    downsampling does. `smooth` adds a pseudocount so empty/near-empty bins
+    don't blow up; `clip` bounds the weight ratio; weights are normalized to
+    mean 1 so the overall loss scale (and a comparable LR) is preserved.
+
+    Returns (bin_edges, bin_weights) for use with torch.bucketize.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    lo, hi = float(y.min()), float(y.max())
+    edges = np.linspace(lo, hi, num_bins + 1)
+    counts, _ = np.histogram(y, bins=edges)
+    density = counts + smooth
+    w = 1.0 / density
+    w = w / w.mean()                      # provisional; renormalize by mass below
+    idx = np.clip(np.digitize(y, edges[1:-1]), 0, num_bins - 1)
+    w = np.clip(w, clip[0], clip[1])
+    # Normalize so the mean weight over the actual data is 1.0 (keeps loss scale).
+    w = w / w[idx].mean()
+    return edges, w
+
+
 class Trainer:
     def __init__(self, model, train_loader, val_loader, num_epochs, lr=1e-3,
                  weight_decay=1e-4, grad_clip=1.0, patience=10, early_stopping=True,
-                 checkpoint_path="best_model.pt", label_clip=None):
+                 checkpoint_path="best_model.pt", label_clip=None,
+                 loss_weighting=None, monitor="loss"):
         self.model = model
         self.checkpoint_path = checkpoint_path
         # Optional (lo, hi) range the regression target is squashed into before
@@ -33,6 +65,35 @@ class Trainer:
         self.early_stopping = early_stopping
         self.best_val_loss = float('inf')
         self.best_val_corr = float('-inf')
+        # Which validation metric drives checkpointing / early stopping.
+        #   "loss"    -> save the minimum-MSE model (original behavior). Under a
+        #               spiked label this favors the more mean-regressed model.
+        #   "pearson" -> save the maximum-Pearson model, i.e. the one that best
+        #               preserves rank/spread -- the metric actually reported.
+        assert monitor in ("loss", "pearson")
+        self.monitor = monitor
+        # Optional inverse-density loss weighting (see inverse_density_weights).
+        # Built from the TRAIN labels; applied per batch by looking each target
+        # up in the bin->weight table. None -> plain (unweighted) MSE.
+        self.loss_weighting = loss_weighting
+        self._bin_edges = None
+        self._bin_weights = None
+        if loss_weighting == "inv_density":
+            edges, weights = inverse_density_weights(train_loader.dataset.y.numpy())
+            # bucketize uses the interior edges; a target in bin i gets weights[i].
+            self._bin_edges = torch.tensor(edges[1:-1], dtype=torch.float32,
+                                           device=self.device)
+            self._bin_weights = torch.tensor(weights, dtype=torch.float32,
+                                              device=self.device)
+
+    def _weighted_mse(self, preds, target, y_true):
+        """MSE, optionally weighted by inverse label density (keyed on the true,
+        unclipped label so the sparse tail is upweighted)."""
+        if self._bin_weights is None:
+            return self.loss_fn(preds, target)
+        idx = torch.bucketize(y_true, self._bin_edges)
+        w = self._bin_weights[idx]
+        return (w * (preds - target) ** 2).mean()
 
     def train_epoch(self):
         self.model.train()
@@ -40,11 +101,11 @@ class Trainer:
 
         for x, y in self.train_loader:
             x, y = x.to(self.device), y.to(self.device)
-            if self.label_clip is not None:
-                y = y.clamp(*self.label_clip)
+            target = y.clamp(*self.label_clip) if self.label_clip is not None else y
             self.optimizer.zero_grad()
             preds = self.model(x).squeeze(1)
-            loss = self.loss_fn(preds, y)
+            # Weighting keys on the true (unclipped) label; target may be clipped.
+            loss = self._weighted_mse(preds, target, y)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.grad_clip)
             self.optimizer.step()
@@ -99,24 +160,31 @@ class Trainer:
                   f"val_loss={val_loss:.4f}  pearson={corr:.4f}  pred_std={pred_std:.4f}  "
                   f"lr={lr:.2e}")
 
-            # Track best Pearson for the final report, guarding against nan: a
-            # collapsed epoch yields nan, and `nan > -inf` is False, so the old
-            # code never updated this and never saved a checkpoint.
-            if not math.isnan(corr) and corr > self.best_val_corr:
-                self.best_val_corr = corr
+            # Decide whether this epoch is the new best under the monitored
+            # metric. For "pearson" we maximize (and skip nan collapse epochs);
+            # for "loss" we minimize val_loss (always finite). Whichever metric
+            # is monitored also drives early stopping, so the saved checkpoint
+            # and the stopping criterion always agree.
+            improved = False
+            if self.monitor == "pearson":
+                if not math.isnan(corr) and corr > self.best_val_corr:
+                    self.best_val_corr = corr
+                    improved = True
+            else:  # "loss"
+                if not math.isnan(corr) and corr > self.best_val_corr:
+                    self.best_val_corr = corr        # still tracked for the report
+                if val_loss < self.best_val_loss:
+                    self.best_val_loss = val_loss
+                    improved = True
 
-            # Checkpoint / early-stop on val_loss, which is always finite. Keying
-            # on Pearson (which can be nan) used to silently disable saving and
-            # stall early stopping forever.
-            if val_loss < self.best_val_loss:
-                self.best_val_loss = val_loss
+            if improved:
                 epochs_no_improve = 0
                 torch.save(self.model.state_dict(), self.checkpoint_path)
             else:
                 epochs_no_improve += 1
                 if self.early_stopping and epochs_no_improve >= self.patience:
                     print(f"early stopping at epoch {epoch+1} "
-                          f"(no val_loss improvement for {self.patience} epochs)")
+                          f"(no {self.monitor} improvement for {self.patience} epochs)")
                     break
 
         return train_losses, val_losses

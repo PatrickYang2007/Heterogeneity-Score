@@ -13,7 +13,9 @@ from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
                     REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH,
                     BALANCE_SPIKE as CFG_BALANCE_SPIKE,
                     SPIKE_THRESHOLD as CFG_SPIKE_THRESHOLD,
-                    SPIKE_KEEP_FRAC as CFG_SPIKE_KEEP_FRAC)
+                    SPIKE_KEEP_FRAC as CFG_SPIKE_KEEP_FRAC,
+                    LOSS_WEIGHTING as CFG_LOSS_WEIGHTING,
+                    MONITOR as CFG_MONITOR)
 
 
 def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
@@ -76,6 +78,14 @@ def parse_args():
                         help=f"fraction of spike rows to keep (default {CFG_SPIKE_KEEP_FRAC})")
     parser.add_argument("--cap-threshold", type=float, default=CFG_SPIKE_THRESHOLD,
                         help=f"score >= this is the spike to thin (default {CFG_SPIKE_THRESHOLD})")
+    # Range-compression levers that keep all the data (alternatives to --balance).
+    parser.add_argument("--loss-weighting", choices=["none", "inv_density"],
+                        default=(CFG_LOSS_WEIGHTING or "none"),
+                        help="weight the loss by inverse label density to upweight "
+                             "the sparse low-score tail (default from config)")
+    parser.add_argument("--monitor", choices=["loss", "pearson"], default=CFG_MONITOR,
+                        help="validation metric for checkpoint/early-stopping "
+                             f"(default {CFG_MONITOR})")
     return parser.parse_args()
 
 
@@ -86,6 +96,9 @@ def main():
     # Spike rebalancing only makes sense for the bounded per-region label (the
     # summed-bin label has no 1.0 pile-up), so force it off in aggregate mode.
     balance = args.balance and not aggregate
+    # Same for inverse-density loss weighting: it targets the per-region 1.0
+    # pile-up, so it's a no-op (forced off) on the summed-bin path.
+    loss_weighting = None if aggregate or args.loss_weighting == "none" else args.loss_weighting
 
     # Per-block max-pool factor. Use 2 for wide windows (grows receptive field);
     # 1 falls back to the original no-pooling model for 16 bp inputs.
@@ -114,10 +127,17 @@ def main():
     feat = "_mask" if region_mask else ""
     if balance:
         feat += f"_bal{int(round(args.cap_frac * 100))}"
+    # Distinct tags so weighted / pearson-monitored runs get their own
+    # checkpoint+curve instead of overwriting the baseline.
+    if loss_weighting == "inv_density":
+        feat += "_idw"
+    if args.monitor != "loss":
+        feat += f"_mon{args.monitor}"
     print(f"Training: window={window}  aggregate={aggregate}  "
           f"blocks={num_blocks}  filters={num_filters}  region_mask={region_mask}  "
           f"balance={balance}"
           + (f" (keep {args.cap_frac:g} of score>={args.cap_threshold:g})" if balance else "")
+          + f"  loss_weighting={loss_weighting or 'none'}  monitor={args.monitor}"
           + f"  -> data{suffix}.parquet")
 
     # Balancing thins only the TRAIN spike; val keeps the real distribution so its
@@ -160,7 +180,8 @@ def main():
     trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=LR,
                       weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=PATIENCE,
                       early_stopping=EARLY_STOPPING, checkpoint_path=checkpoint_path,
-                      label_clip=label_clip)
+                      label_clip=label_clip, loss_weighting=loss_weighting,
+                      monitor=args.monitor)
     train_losses, val_losses = trainer.fit()
 
     plot_loss_curves(train_losses, val_losses, out_dir=OUT_DIR,

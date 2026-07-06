@@ -49,3 +49,20 @@ REGION_WIDTH = 16
 BALANCE_SPIKE = False
 SPIKE_THRESHOLD = 1.0   # rows with score >= this are the spike to thin
 SPIKE_KEEP_FRAC = 0.3   # fraction of spike rows to keep (0.3 -> ~41% spike becomes ~17%)
+
+# Inverse-density loss weighting (per-region path). An alternative to spike
+# downsampling that keeps every row: each training example is weighted by the
+# inverse frequency of its score bin, so the sparse low-score tail contributes
+# as much gradient as the dense 1.0 pile-up. This directly counters range
+# compression / regression to the mean (best-fit slope < 1) without throwing
+# away data. None -> plain MSE; "inv_density" -> weighted. Overridable per run
+# with --loss-weighting {none,inv_density}. Ignored for the summed-bin path.
+LOSS_WEIGHTING = None
+
+# Which validation metric selects the saved checkpoint and drives early
+# stopping. "loss" (min MSE) is the historical default, but under a label that
+# piles up at 1.0 the min-MSE model is the MORE mean-regressed one, so it works
+# against the reported goal. "pearson" (max) saves the model that best preserves
+# rank/spread -- the metric eval_report actually cares about. Overridable per
+# run with --monitor {loss,pearson}.
+MONITOR = "loss"
