@@ -192,3 +192,20 @@ class HeterogeneityScoreModel(nn.Module):
         x = self.pool(x)
         x = self.fc(x)
         return torch.sigmoid(x) if self.bounded else x
+
+
+def load_model(weight_file, device, in_channels=4, num_filters=32, num_blocks=3,
+               ker_size=5, dropout=0.3, pool=2, bounded=True):
+    """Build a HeterogeneityScoreModel, load a checkpoint into it, and put it on
+    `device` in eval mode.
+
+    Shared by predict.py and eval_report.py so inference always reconstructs the
+    architecture the same way. The arch args (in_channels, num_filters,
+    num_blocks, ker_size, pool) and `bounded` must match how the weights were
+    trained, or load_state_dict will fail on a shape/key mismatch.
+    """
+    model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
+                                    in_channels=in_channels, num_filters=num_filters,
+                                    num_blocks=num_blocks, pool=pool, bounded=bounded)
+    model.load_state_dict(torch.load(weight_file, map_location=device))
+    return model.to(device).eval()

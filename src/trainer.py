@@ -86,6 +86,11 @@ class Trainer:
             self._bin_weights = torch.tensor(weights, dtype=torch.float32,
                                               device=self.device)
 
+    def _clip_target(self, y):
+        """Squash the regression target into label_clip, or pass it through when
+        clipping is disabled (unbounded linear head)."""
+        return y.clamp(*self.label_clip) if self.label_clip is not None else y
+
     def _weighted_mse(self, preds, target, y_true):
         """MSE, optionally weighted by inverse label density (keyed on the true,
         unclipped label so the sparse tail is upweighted)."""
@@ -101,7 +106,7 @@ class Trainer:
 
         for x, y in self.train_loader:
             x, y = x.to(self.device), y.to(self.device)
-            target = y.clamp(*self.label_clip) if self.label_clip is not None else y
+            target = self._clip_target(y)
             self.optimizer.zero_grad()
             preds = self.model(x).squeeze(1)
             # Weighting keys on the true (unclipped) label; target may be clipped.
@@ -122,7 +127,7 @@ class Trainer:
             for x, y in self.val_loader:
                 x, y = x.to(self.device), y.to(self.device)
                 preds = self.model(x).squeeze(1)
-                target = y.clamp(*self.label_clip) if self.label_clip is not None else y
+                target = self._clip_target(y)
                 total_loss += self.loss_fn(preds, target).item()
                 all_preds.extend(preds.cpu().tolist())
                 # Pearson is reported against the true (unclipped) labels so it

@@ -66,3 +66,32 @@ LOSS_WEIGHTING = None
 # rank/spread -- the metric eval_report actually cares about. Overridable per
 # run with --monitor {loss,pearson}.
 MONITOR = "loss"
+
+
+# --------------------------------------------------------------------------
+# Derived settings. train.py / predict.py / eval_report.py all need the same
+# window->pooling and per-region-vs-aggregate->channel rules; deriving them here
+# keeps the three entry points from drifting out of sync.
+# --------------------------------------------------------------------------
+
+def pool_for_window(window):
+    """Per-block max-pool factor for a given window width.
+
+    2 halves the length each block so a wide window grows the receptive field;
+    1 is the no-pool path for the original 16 bp inputs (window None/0).
+    """
+    return 2 if window else 1
+
+
+def region_mask_enabled(aggregate):
+    """Whether the region-mask input channel is used.
+
+    Only the per-region path carries it; the summed-bin (aggregate) label has no
+    single region to mark. Gated by the REGION_MASK toggle above.
+    """
+    return REGION_MASK and not aggregate
+
+
+def in_channels_for(region_mask):
+    """Model input channels: 4 base one-hot, plus 1 for the region mask."""
+    return 5 if region_mask else 4

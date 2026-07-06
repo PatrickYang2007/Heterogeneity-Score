@@ -10,12 +10,13 @@ import torch
 from model import HeterogeneityScoreModel, make_dataloader
 from trainer import Trainer
 from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
-                    REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH,
+                    REGION_WIDTH as CFG_REGION_WIDTH,
                     BALANCE_SPIKE as CFG_BALANCE_SPIKE,
                     SPIKE_THRESHOLD as CFG_SPIKE_THRESHOLD,
                     SPIKE_KEEP_FRAC as CFG_SPIKE_KEEP_FRAC,
                     LOSS_WEIGHTING as CFG_LOSS_WEIGHTING,
-                    MONITOR as CFG_MONITOR)
+                    MONITOR as CFG_MONITOR,
+                    pool_for_window, region_mask_enabled, in_channels_for)
 
 
 def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
@@ -102,13 +103,13 @@ def main():
 
     # Per-block max-pool factor. Use 2 for wide windows (grows receptive field);
     # 1 falls back to the original no-pooling model for 16 bp inputs.
-    pool = 2 if window else 1
+    pool = pool_for_window(window)
 
     # Region-mask channel only applies to the per-region path (the summed-bin
     # label has no single region to mark). When on, the input gains a 5th channel,
     # so the model's first conv must take in_channels=5.
-    region_mask = CFG_REGION_MASK and not aggregate
-    in_channels = 5 if region_mask else 4
+    region_mask = region_mask_enabled(aggregate)
+    in_channels = in_channels_for(region_mask)
 
     # Data suffix depends only on window/aggregate (architecture doesn't change
     # the data). The arch tag is appended to OUTPUT names only when capacity is
