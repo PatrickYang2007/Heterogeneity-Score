@@ -1,0 +1,14 @@
+name: heterogeneity-score
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pytorch
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - pyfaidx
+  - macs2
+  - pytest
