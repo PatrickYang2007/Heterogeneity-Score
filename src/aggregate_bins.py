@@ -24,10 +24,11 @@ output is linear instead of sigmoid-squashed (train.py handles this when
 AGGREGATE is on). No MACS2 peak filtering is applied here: the summation itself
 downweights low-signal bins.
 """
+import os
+import pandas as pd
 from pyfaidx import Fasta
 
-from prepare_data import (TRAIN_CHROMS, VAL_CHROMS, TEST_CHROMS,
-                          load_bedgraph, extract_sequences)
+from prepare_data import TRAIN_CHROMS, VAL_CHROMS, TEST_CHROMS
 from config import WINDOW
 
 DATA_DIR = "data"
@@ -70,7 +71,17 @@ def aggregate_scores(df, window):
 
 def build_bins(bedgraph_path, genome_path, window):
     print("Loading bedgraph...")
-    df = load_bedgraph(bedgraph_path)
+    df = pd.read_csv(
+        bedgraph_path,
+        sep="\t",
+        header=None,
+        usecols=[0, 1, 2, 3],
+        names=["chrom", "start", "end", "score"],
+        dtype={"chrom": str, "start": float, "end": float, "score": float},
+    )
+    df["start"] = df["start"].round().astype(int)
+    df["end"] = df["end"].round().astype(int)
+    print(f"  {len(df):,} regions loaded")
 
     agg = aggregate_scores(df, window)
     print(f"  {len(agg):,} bins with >=1 region "
@@ -79,11 +90,14 @@ def build_bins(bedgraph_path, genome_path, window):
 
     print("Extracting bin sequences...")
     genome = Fasta(genome_path)
-    agg["sequence"] = extract_sequences(
-        agg, genome,
-        lambda chrom_seq, group: [extract_bin(chrom_seq, s, window) for s in group["start"]],
-        missing_fill="N" * window,
-    )
+    sequences = pd.Series(index=agg.index, dtype=str)
+    for chrom, group in agg.groupby("chrom"):
+        if chrom not in genome:
+            sequences[group.index] = "N" * window
+            continue
+        chrom_seq = genome[chrom][:].seq.upper()
+        sequences[group.index] = [extract_bin(chrom_seq, s, window) for s in group["start"]]
+    agg["sequence"] = sequences
 
     lengths = agg["sequence"].str.len()
     assert (lengths == window).all(), f"got widths {sorted(lengths.unique())[:5]}"

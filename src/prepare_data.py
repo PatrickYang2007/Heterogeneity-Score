@@ -54,47 +54,6 @@ def extract_window(chrom_seq, start, end, window):
     return "N" * left_pad + core + "N" * right_pad
 
 
-def load_bedgraph(bedgraph_path):
-    """Read a 4-column bedgraph (chrom, start, end, score) into a DataFrame.
-
-    Shared by prepare_data and aggregate_bins so both parse coordinates the same
-    way. start/end are read as float because some rows store coordinates in
-    scientific notation (e.g. "7.2e+07"), which int parsing rejects; they are
-    rounded back to int here.
-    """
-    df = pd.read_csv(
-        bedgraph_path,
-        sep="\t",
-        header=None,
-        usecols=[0, 1, 2, 3],
-        names=["chrom", "start", "end", "score"],
-        dtype={"chrom": str, "start": float, "end": float, "score": float},
-    )
-    df["start"] = df["start"].round().astype(int)
-    df["end"] = df["end"].round().astype(int)
-    print(f"  {len(df):,} regions loaded")
-    return df
-
-
-def extract_sequences(frame, genome, per_group, missing_fill):
-    """Map each row of `frame` to a sequence, reading each chromosome's FASTA once.
-
-    Groups `frame` by chrom, upper-cases the chromosome sequence, and delegates
-    to `per_group(chrom_seq, group)` -> list of sequences (in group order) for
-    the actual slicing. Rows on a chromosome absent from `genome` are filled with
-    `missing_fill`. Shared by prepare_data, widen_windows, and aggregate_bins,
-    which differ only in how they slice a window out of `chrom_seq`.
-    """
-    seqs = pd.Series(index=frame.index, dtype=str)
-    for chrom, group in frame.groupby("chrom"):
-        if chrom not in genome:
-            seqs[group.index] = missing_fill
-            continue
-        chrom_seq = genome[chrom][:].seq.upper()
-        seqs[group.index] = per_group(chrom_seq, group)
-    return seqs
-
-
 def run_macs2_bdgpeakcall(bedgraph_path, out_dir, cutoff=2.0, min_length=200, max_gap=100):
     """Run MACS2 bdgpeakcall on a bedgraph and return path to the output peak BED file."""
     peak_path = os.path.join(out_dir, "peaks.bed")
@@ -135,18 +94,33 @@ def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
                  cutoff=2.0, min_length=200, max_gap=100, peak_path=None,
                  window=None):
     print("Loading bedgraph...")
-    df = load_bedgraph(bedgraph_path)
+    df = pd.read_csv(
+        bedgraph_path,
+        sep="\t",
+        header=None,
+        usecols=[0, 1, 2, 3],
+        names=["chrom", "start", "end", "score"],
+        # start/end are read as float because some rows store coordinates in
+        # scientific notation (e.g. "7.2e+07"), which int parsing rejects.
+        dtype={"chrom": str, "start": float, "end": float, "score": float},
+    )
+    df["start"] = df["start"].round().astype(int)
+    df["end"] = df["end"].round().astype(int)
+    print(f"  {len(df):,} regions loaded")
 
     print("Extracting sequences...")
     genome = Fasta(genome_path)
-    df["sequence"] = extract_sequences(
-        df, genome,
-        lambda chrom_seq, group: [
+    sequences = pd.Series(index=df.index, dtype=str)
+    for chrom, group in df.groupby("chrom"):
+        if chrom not in genome:
+            sequences[group.index] = "N" * 16
+            continue
+        chrom_seq = genome[chrom][:].seq.upper()
+        sequences[group.index] = [
             extract_window(chrom_seq, s, e, window)
             for s, e in zip(group["start"], group["end"])
-        ],
-        missing_fill="N" * 16,
-    )
+        ]
+    df["sequence"] = sequences
     print(f"  Done. Example: {df['sequence'].iloc[0]}")
 
     if peak_path is not None:

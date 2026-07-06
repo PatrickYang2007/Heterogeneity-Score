@@ -13,7 +13,7 @@ import os
 import pandas as pd
 from pyfaidx import Fasta
 
-from prepare_data import extract_window, extract_sequences
+from prepare_data import extract_window
 from config import WINDOW
 
 DATA_DIR = "data"
@@ -27,14 +27,17 @@ def widen_split(split, genome, window):
     df = pd.read_parquet(in_path)
     print(f"[{split}] {len(df):,} rows -> {window} bp windows")
 
-    df["sequence"] = extract_sequences(
-        df, genome,
-        lambda chrom_seq, group: [
+    seqs = pd.Series(index=df.index, dtype=str)
+    for chrom, group in df.groupby("chrom"):
+        if chrom not in genome:
+            seqs[group.index] = "N" * window
+            continue
+        chrom_seq = genome[chrom][:].seq.upper()
+        seqs[group.index] = [
             extract_window(chrom_seq, s, e, window)
             for s, e in zip(group["start"], group["end"])
-        ],
-        missing_fill="N" * window,
-    )
+        ]
+    df["sequence"] = seqs
 
     lengths = df["sequence"].str.len()
     assert (lengths == window).all(), f"got widths {sorted(lengths.unique())[:5]}"

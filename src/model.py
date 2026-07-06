@@ -22,41 +22,9 @@ def region_mask_channel(length, region_width):
     return mask
 
 
-def downsample_spike(df, threshold, keep_frac, seed=0):
-    """Randomly drop rows whose score is >= `threshold` so only `keep_frac` of
-    them survive; rows below the threshold are left untouched.
-
-    The per-region labels pile up at exactly 1.0 (~41% of rows). Under MSE that
-    spike dominates the gradient and pulls predictions toward the high mean
-    (range compression / regression to the mean). Thinning it on the TRAIN split
-    rebalances the distribution the model optimizes against. Apply this to train
-    only -- val/test must stay on the real distribution or their metrics stop
-    being comparable across runs. Seeded so the subsample is reproducible.
-    """
-    if keep_frac is None or keep_frac >= 1.0:
-        return df
-    spike = df["score"].to_numpy() >= threshold
-    spike_idx = np.flatnonzero(spike)
-    n_keep = int(round(len(spike_idx) * keep_frac))
-    rng = np.random.default_rng(seed)
-    keep_spike = rng.choice(spike_idx, size=n_keep, replace=False)
-    keep = ~spike                       # keep every below-threshold row
-    keep[keep_spike] = True             # plus the sampled fraction of the spike
-    out = df.iloc[keep].reset_index(drop=True)
-    print(f"  downsample_spike: score>={threshold}: {len(spike_idx)} -> {n_keep} "
-          f"kept (keep_frac={keep_frac}); rows {len(df)} -> {len(out)}")
-    return out
-
-
 class GenomicDataset(Dataset):
-    def __init__(self, parquet_path, region_mask=False, region_width=16,
-                 balance=False, cap_threshold=1.0, cap_frac=0.3, cap_seed=0):
+    def __init__(self, parquet_path, region_mask=False, region_width=16):
         df = pd.read_parquet(parquet_path, columns=["sequence", "score"])
-        # Optional train-only rebalancing: when `balance` is on, thin the
-        # score>=cap_threshold spike down to cap_frac of its rows. Off by default,
-        # so val/test/eval/predict always see the real, untouched distribution.
-        if balance:
-            df = downsample_spike(df, cap_threshold, cap_frac, cap_seed)
         sequences = df["sequence"].str.upper().tolist()
         # Store sequences as compact int8 indices (A/C/G/T=0-3, N/other=4) and
         # build the one-hot tensor on the fly in __getitem__. This keeps memory
@@ -86,11 +54,8 @@ class GenomicDataset(Dataset):
 
 
 def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4,
-                    region_mask = False, region_width = 16,
-                    balance = False, cap_threshold = 1.0, cap_frac = 0.3, cap_seed = 0):
-    ds = GenomicDataset(parquet_path, region_mask=region_mask, region_width=region_width,
-                        balance=balance, cap_threshold=cap_threshold,
-                        cap_frac=cap_frac, cap_seed=cap_seed)
+                    region_mask = False, region_width = 16):
+    ds = GenomicDataset(parquet_path, region_mask=region_mask, region_width=region_width)
     return DataLoader(ds, batch_size = batch_size, shuffle = shuffle,
                       num_workers = num_workers, pin_memory = True)
 
@@ -192,20 +157,3 @@ class HeterogeneityScoreModel(nn.Module):
         x = self.pool(x)
         x = self.fc(x)
         return torch.sigmoid(x) if self.bounded else x
-
-
-def load_model(weight_file, device, in_channels=4, num_filters=32, num_blocks=3,
-               ker_size=5, dropout=0.3, pool=2, bounded=True):
-    """Build a HeterogeneityScoreModel, load a checkpoint into it, and put it on
-    `device` in eval mode.
-
-    Shared by predict.py and eval_report.py so inference always reconstructs the
-    architecture the same way. The arch args (in_channels, num_filters,
-    num_blocks, ker_size, pool) and `bounded` must match how the weights were
-    trained, or load_state_dict will fail on a shape/key mismatch.
-    """
-    model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
-                                    in_channels=in_channels, num_filters=num_filters,
-                                    num_blocks=num_blocks, pool=pool, bounded=bounded)
-    model.load_state_dict(torch.load(weight_file, map_location=device))
-    return model.to(device).eval()

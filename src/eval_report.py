@@ -35,9 +35,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.stats import pearsonr, spearmanr, rankdata
 
-from model import load_model, make_dataloader
-from config import (REGION_WIDTH as CFG_REGION_WIDTH,
-                    pool_for_window, region_mask_enabled, in_channels_for)
+from model import HeterogeneityScoreModel, make_dataloader
+from config import REGION_MASK as CFG_REGION_MASK, REGION_WIDTH as CFG_REGION_WIDTH
 
 
 # ----------------------------- metrics (numpy) -----------------------------
@@ -316,14 +315,17 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pool = pool_for_window(args.window)
+    pool = 2 if args.window else 1
     # Mirror train.py: per-region weights carry the region-mask channel (5 input
     # channels), the summed-bin path does not.
-    region_mask = region_mask_enabled(args.aggregate)
-    model = load_model(args.weights, device, in_channels=in_channels_for(region_mask),
-                       num_filters=args.num_filters, num_blocks=args.num_blocks,
-                       ker_size=args.ker_size, dropout=args.dropout, pool=pool,
-                       bounded=not args.aggregate)
+    region_mask = CFG_REGION_MASK and not args.aggregate
+    in_channels = 5 if region_mask else 4
+    model = HeterogeneityScoreModel(dropout=args.dropout, ker_size=args.ker_size,
+                                  in_channels=in_channels,
+                                  num_filters=args.num_filters, num_blocks=args.num_blocks,
+                                  pool=pool, bounded=not args.aggregate)
+    model.load_state_dict(torch.load(args.weights, map_location=device))
+    model = model.to(device)
     print(f"Loaded {args.weights} (device={device}, bounded={not args.aggregate})")
 
     results = {}
