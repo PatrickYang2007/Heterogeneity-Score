@@ -97,6 +97,12 @@ def parse_args():
     parser.add_argument("--no-raw-label", dest="raw_label", action="store_false",
                         help="regress the bedgraph score (bounded sigmoid head)")
     parser.set_defaults(raw_label=CFG_RAW_LABEL)
+    # Early-stopping patience. The default is deliberately generous, but at
+    # ~45 min/epoch that lets a run train ~19 h past its best epoch and hit the
+    # 16 h Slurm walltime; lower it (e.g. 10) to finish cleanly.
+    parser.add_argument("--patience", type=int, default=PATIENCE,
+                        help=f"epochs without improvement before early stopping "
+                             f"(default {PATIENCE})")
     return parser.parse_args()
 
 
@@ -208,7 +214,7 @@ def main():
                                   pool = pool, bounded = bounded, bias_init = bias_init)
 
     trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=LR,
-                      weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=PATIENCE,
+                      weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=args.patience,
                       early_stopping=EARLY_STOPPING, checkpoint_path=checkpoint_path,
                       label_clip=label_clip, loss_weighting=loss_weighting,
                       monitor=monitor)
