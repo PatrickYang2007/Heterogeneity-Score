@@ -263,7 +263,13 @@ def write_summary(results, out_dir, args, suffix):
     lines.append("=" * 60)
     lines.append(f"weights      : {args.weights}")
     lines.append(f"data         : data/{{split}}{suffix}.parquet")
-    lines.append(f"mode         : {'summed-bin (linear)' if args.aggregate else 'per-region (sigmoid)'}")
+    if args.aggregate:
+        mode = "summed-bin (linear)"
+    elif getattr(args, "raw_label", False):
+        mode = "per-region raw signal (linear)"
+    else:
+        mode = "per-region (sigmoid)"
+    lines.append(f"mode         : {mode}")
     lines.append(f"window       : {args.window}")
     lines.append("")
     header = f"{'metric':<14}" + "".join(f"{s:>12}" for s in results)
@@ -299,6 +305,9 @@ def main():
     p.add_argument("--window", type=int, required=True, help="window/bin size of the data")
     p.add_argument("--aggregate", action="store_true",
                    help="weights are from a summed-bin model (linear output)")
+    p.add_argument("--raw-label", dest="raw_label", action="store_true",
+                   help="weights are from a raw-signal model (per-region, linear "
+                        "output); loads data/{split}_w{window}_raw.parquet")
     p.add_argument("--tag", default=None, help="output subfolder name under Models/eval/")
     p.add_argument("--threshold", type=float, default=0.75,
                    help="score threshold for binary ROC/PR (per-region only)")
@@ -310,7 +319,13 @@ def main():
     p.add_argument("--dropout", type=float, default=0.3)
     args = p.parse_args()
 
+    # The raw-signal model is per-region (no _agg) but uses the linear head, and
+    # its labels live in the _raw parquet files. bounded drives both the output
+    # head and the threshold-ROC block (skipped for the unbounded raw target).
     suffix = f"_agg{args.window}" if args.aggregate else f"_w{args.window}"
+    if args.raw_label and not args.aggregate:
+        suffix += "_raw"
+    bounded = not (args.aggregate or args.raw_label)
     tag = args.tag or suffix.lstrip("_")
     out_dir = f"Models/eval/{tag}"
     os.makedirs(out_dir, exist_ok=True)
@@ -318,13 +333,14 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pool = pool_for_window(args.window)
     # Mirror train.py: per-region weights carry the region-mask channel (5 input
-    # channels), the summed-bin path does not.
+    # channels), the summed-bin path does not. The raw-signal path is per-region,
+    # so it keeps the mask.
     region_mask = region_mask_enabled(args.aggregate)
     model = load_model(args.weights, device, in_channels=in_channels_for(region_mask),
                        num_filters=args.num_filters, num_blocks=args.num_blocks,
                        ker_size=args.ker_size, dropout=args.dropout, pool=pool,
-                       bounded=not args.aggregate)
-    print(f"Loaded {args.weights} (device={device}, bounded={not args.aggregate})")
+                       bounded=bounded)
+    print(f"Loaded {args.weights} (device={device}, bounded={bounded})")
 
     results = {}
     for split in ["val", "test"]:
@@ -333,7 +349,7 @@ def main():
             print(f"[{split}] {parquet} missing, skipping")
             continue
         results[split] = evaluate_split(model, split, parquet, device,
-                                        args.threshold, not args.aggregate, out_dir,
+                                        args.threshold, bounded, out_dir,
                                         region_mask=region_mask,
                                         region_width=CFG_REGION_WIDTH)
 

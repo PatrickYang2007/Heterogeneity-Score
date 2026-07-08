@@ -16,6 +16,7 @@ from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
                     SPIKE_KEEP_FRAC as CFG_SPIKE_KEEP_FRAC,
                     LOSS_WEIGHTING as CFG_LOSS_WEIGHTING,
                     MONITOR as CFG_MONITOR,
+                    RAW_LABEL as CFG_RAW_LABEL,
                     pool_for_window, region_mask_enabled, in_channels_for)
 
 
@@ -87,6 +88,15 @@ def parse_args():
     parser.add_argument("--monitor", choices=["loss", "pearson"], default=CFG_MONITOR,
                         help="validation metric for checkpoint/early-stopping "
                              f"(default {CFG_MONITOR})")
+    # Regress the raw specificity-entropy signal (linear head) instead of the
+    # bedgraph score; loads the _raw parquet and forces off every lever that only
+    # exists to fight the score's 1.0 pile-up.
+    parser.add_argument("--raw-label", dest="raw_label", action="store_true",
+                        help="regress the raw signal (data/{split}_w{WINDOW}_raw.parquet, "
+                             "linear head, no clip/balance/weighting)")
+    parser.add_argument("--no-raw-label", dest="raw_label", action="store_false",
+                        help="regress the bedgraph score (bounded sigmoid head)")
+    parser.set_defaults(raw_label=CFG_RAW_LABEL)
     return parser.parse_args()
 
 
@@ -94,12 +104,22 @@ def main():
     args = parse_args()
     window, aggregate = args.window, args.aggregate
     num_filters, num_blocks = args.num_filters, args.num_blocks
+    # Raw-signal target: per-region path only (the summed-bin label is a different
+    # signal). It has no 1.0 pile-up, so it uses a linear head and forces off every
+    # anti-saturation lever below (balance, loss weighting, target clip, bias seed).
+    raw_label = args.raw_label and not aggregate
     # Spike rebalancing only makes sense for the bounded per-region label (the
     # summed-bin label has no 1.0 pile-up), so force it off in aggregate mode.
-    balance = args.balance and not aggregate
+    # The raw target has no pile-up either, so force it off there too.
+    balance = args.balance and not aggregate and not raw_label
     # Same for inverse-density loss weighting: it targets the per-region 1.0
-    # pile-up, so it's a no-op (forced off) on the summed-bin path.
-    loss_weighting = None if aggregate or args.loss_weighting == "none" else args.loss_weighting
+    # pile-up, so it's a no-op (forced off) on the summed-bin and raw paths.
+    loss_weighting = (None if aggregate or raw_label or args.loss_weighting == "none"
+                      else args.loss_weighting)
+    # Min-MSE checkpointing favors the mean-regressed model under the spiked
+    # score; the raw target isn't spiked, but Pearson is still the reported goal,
+    # so default raw runs to pearson-monitored checkpointing.
+    monitor = "pearson" if raw_label else args.monitor
 
     # Per-block max-pool factor. Use 2 for wide windows (grows receptive field);
     # 1 falls back to the original no-pooling model for 16 bp inputs.
@@ -119,6 +139,10 @@ def main():
         suffix = f"_agg{window}"
     else:
         suffix = f"_w{window}" if window else ""
+    # The raw-signal target lives in separate _raw parquet files (same rows, label
+    # swapped for log1p(raw)). Only the DATA files carry this suffix; the _raw tag
+    # goes on OUTPUT names via `feat` below so checkpoints stay distinct.
+    data_suffix = suffix + ("_raw" if raw_label else "")
     arch = ""
     if (num_blocks, num_filters) != (NUM_BLOCKS, NUM_FILTERS):
         arch = f"_b{num_blocks}_f{num_filters}"
@@ -126,28 +150,32 @@ def main():
     # confused with) the no-mask baseline's checkpoint and loss curve. Balanced
     # runs get their own tag too (e.g. _bal30 = spike thinned to 30% kept).
     feat = "_mask" if region_mask else ""
+    # Raw-target runs get their own tag so they never overwrite a score-trained
+    # checkpoint/curve (different label, different head).
+    if raw_label:
+        feat += "_raw"
     if balance:
         feat += f"_bal{int(round(args.cap_frac * 100))}"
     # Distinct tags so weighted / pearson-monitored runs get their own
     # checkpoint+curve instead of overwriting the baseline.
     if loss_weighting == "inv_density":
         feat += "_idw"
-    if args.monitor != "loss":
-        feat += f"_mon{args.monitor}"
-    print(f"Training: window={window}  aggregate={aggregate}  "
+    if monitor != "loss":
+        feat += f"_mon{monitor}"
+    print(f"Training: window={window}  aggregate={aggregate}  raw_label={raw_label}  "
           f"blocks={num_blocks}  filters={num_filters}  region_mask={region_mask}  "
           f"balance={balance}"
           + (f" (keep {args.cap_frac:g} of score>={args.cap_threshold:g})" if balance else "")
-          + f"  loss_weighting={loss_weighting or 'none'}  monitor={args.monitor}"
-          + f"  -> data{suffix}.parquet")
+          + f"  loss_weighting={loss_weighting or 'none'}  monitor={monitor}"
+          + f"  -> data{data_suffix}.parquet")
 
     # Balancing thins only the TRAIN spike; val keeps the real distribution so its
     # loss/Pearson stay comparable to non-balanced runs.
-    train_loader = make_dataloader(f"{DATA_DIR}/train{suffix}.parquet", batch_size = BATCH_SIZE,
+    train_loader = make_dataloader(f"{DATA_DIR}/train{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                    region_mask = region_mask, region_width = CFG_REGION_WIDTH,
                                    balance = balance, cap_threshold = args.cap_threshold,
                                    cap_frac = args.cap_frac)
-    val_loader = make_dataloader(f"{DATA_DIR}/val{suffix}.parquet", batch_size = BATCH_SIZE,
+    val_loader = make_dataloader(f"{DATA_DIR}/val{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                  shuffle = False, region_mask = region_mask,
                                  region_width = CFG_REGION_WIDTH)
 
@@ -159,8 +187,9 @@ def main():
 
     # Summed-bin labels are unbounded, so drop the final sigmoid (bounded=False)
     # and skip the target clipping / bias seeding (those only make sense for the
-    # bounded [0, 1] per-region head).
-    bounded = not aggregate
+    # bounded [0, 1] per-region head). The raw log1p(signal) target is likewise
+    # unbounded, so it uses the linear head too.
+    bounded = not aggregate and not raw_label
     label_clip = TARGET_CLIP if bounded else None
     bias_init = None
     if bounded:
@@ -182,7 +211,7 @@ def main():
                       weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=PATIENCE,
                       early_stopping=EARLY_STOPPING, checkpoint_path=checkpoint_path,
                       label_clip=label_clip, loss_weighting=loss_weighting,
-                      monitor=args.monitor)
+                      monitor=monitor)
     train_losses, val_losses = trainer.fit()
 
     plot_loss_curves(train_losses, val_losses, out_dir=OUT_DIR,

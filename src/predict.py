@@ -61,6 +61,9 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--aggregate", action="store_true",
                         help="weights are from a summed-bin model (linear output, no sigmoid)")
+    parser.add_argument("--raw-label", dest="raw_label", action="store_true",
+                        help="weights are from a raw-signal model (per-region, linear "
+                             "output); keeps the region-mask channel")
     args = parser.parse_args()
 
     # Match train.py / eval_report.py: any window pools by 2, the raw 16 bp path
@@ -68,6 +71,8 @@ def main():
     # region-mask channel; the summed-bin path does not. Must match how the
     # weights were trained.
     pool = pool_for_window(args.window)
+    # The raw-signal model is per-region (keeps the mask channel) but linear-headed,
+    # so bounded is off for both the summed-bin and raw paths.
     region_mask = region_mask_enabled(args.aggregate)
 
     predict(
@@ -79,7 +84,7 @@ def main():
         ker_size=args.ker_size,
         dropout=args.dropout,
         batch_size=args.batch_size,
-        bounded=not args.aggregate,
+        bounded=not (args.aggregate or args.raw_label),
         pool=pool,
         region_mask=region_mask,
         region_width=CFG_REGION_WIDTH,

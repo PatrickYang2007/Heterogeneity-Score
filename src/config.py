@@ -67,6 +67,17 @@ LOSS_WEIGHTING = None
 # run with --monitor {loss,pearson}.
 MONITOR = "loss"
 
+# Raw-signal target (per-region path). When True, train.py regresses the
+# un-clipped specificity-entropy signal from data/{split}_w{WINDOW}_raw.parquet
+# (built by attach_raw_label.py) instead of the bedgraph score. That target is
+# continuous, heavy-tailed (log1p-transformed) and has no 1.0 pile-up, so the
+# model uses a LINEAR head (bounded=False) and every anti-saturation lever
+# (TARGET_CLIP, BALANCE_SPIKE, LOSS_WEIGHTING, bias seeding) is forced off --
+# they only exist to fight the saturation this target doesn't have. Checkpoint
+# and eval must load the same _raw data with bounded=False. Overridable per run
+# with --raw-label/--no-raw-label. Ignored for the summed-bin (AGGREGATE) path.
+RAW_LABEL = False
+
 
 # --------------------------------------------------------------------------
 # Derived settings. train.py / predict.py / eval_report.py all need the same
