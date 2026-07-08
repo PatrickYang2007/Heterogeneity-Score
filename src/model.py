@@ -50,7 +50,8 @@ def downsample_spike(df, threshold, keep_frac, seed=0):
 
 class GenomicDataset(Dataset):
     def __init__(self, parquet_path, region_mask=False, region_width=16,
-                 balance=False, cap_threshold=1.0, cap_frac=0.3, cap_seed=0):
+                 balance=False, cap_threshold=1.0, cap_frac=0.3, cap_seed=0,
+                 rc_augment=False):
         df = pd.read_parquet(parquet_path, columns=["sequence", "score"])
         # Optional train-only rebalancing: when `balance` is on, thin the
         # score>=cap_threshold spike down to cap_frac of its rows. Off by default,
@@ -71,6 +72,13 @@ class GenomicDataset(Dataset):
         self.region_mask = region_mask
         self._mask = (region_mask_channel(self.x.shape[1], region_width)
                       if region_mask else None)
+        # Reverse-complement augmentation (train only). DNA is double-stranded, so
+        # a window and its reverse complement describe the same locus and share the
+        # label; showing the model both, chosen at random per access, roughly
+        # doubles the effective data and is a strong regularizer against the fast
+        # overfitting a from-scratch conv stack shows here. Must be OFF for val/test
+        # so their metrics stay deterministic and comparable.
+        self.rc_augment = rc_augment
 
     def __len__(self):
         return len(self.y)
@@ -80,6 +88,12 @@ class GenomicDataset(Dataset):
         onehot = F.one_hot(idx_seq.clamp(max=3), num_classes=4).float()
         onehot[idx_seq == 4] = 0.0                          # N -> all-zero vector
         x = onehot.transpose(0, 1)                          # (4, L)
+        if self.rc_augment and torch.rand(1).item() < 0.5:
+            # Reverse complement = reverse along length AND complement bases.
+            # Channel order is A,C,G,T (0,1,2,3), so complementing swaps A<->T
+            # (0<->3) and C<->G (1<->2). Applied while still 4-channel; the region
+            # mask is symmetric about the center, so it's added afterward unchanged.
+            x = torch.flip(x, dims=[1])[[3, 2, 1, 0]]
         if self.region_mask:
             x = torch.cat([x, self._mask], dim=0)           # (5, L)
         return x, self.y[idx]
@@ -87,10 +101,11 @@ class GenomicDataset(Dataset):
 
 def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4,
                     region_mask = False, region_width = 16,
-                    balance = False, cap_threshold = 1.0, cap_frac = 0.3, cap_seed = 0):
+                    balance = False, cap_threshold = 1.0, cap_frac = 0.3, cap_seed = 0,
+                    rc_augment = False):
     ds = GenomicDataset(parquet_path, region_mask=region_mask, region_width=region_width,
                         balance=balance, cap_threshold=cap_threshold,
-                        cap_frac=cap_frac, cap_seed=cap_seed)
+                        cap_frac=cap_frac, cap_seed=cap_seed, rc_augment=rc_augment)
     return DataLoader(ds, batch_size = batch_size, shuffle = shuffle,
                       num_workers = num_workers, pin_memory = True)
 

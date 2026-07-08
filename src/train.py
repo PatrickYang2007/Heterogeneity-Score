@@ -103,6 +103,14 @@ def parse_args():
     parser.add_argument("--patience", type=int, default=PATIENCE,
                         help=f"epochs without improvement before early stopping "
                              f"(default {PATIENCE})")
+    # Anti-overfitting knobs (the runs here overfit by epoch 2). RC augmentation
+    # is the big lever; --lr/--dropout let a sweep dial regularization per run.
+    parser.add_argument("--rc-aug", dest="rc_aug", action="store_true",
+                        help="reverse-complement augment the TRAIN split (regularizer)")
+    parser.add_argument("--lr", type=float, default=LR,
+                        help=f"initial learning rate (default {LR:g})")
+    parser.add_argument("--dropout", type=float, default=DROPOUT,
+                        help=f"dropout in each conv block (default {DROPOUT})")
     return parser.parse_args()
 
 
@@ -160,6 +168,8 @@ def main():
     # checkpoint/curve (different label, different head).
     if raw_label:
         feat += "_raw"
+    if args.rc_aug:
+        feat += "_rc"
     if balance:
         feat += f"_bal{int(round(args.cap_frac * 100))}"
     # Distinct tags so weighted / pearson-monitored runs get their own
@@ -180,7 +190,7 @@ def main():
     train_loader = make_dataloader(f"{DATA_DIR}/train{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                    region_mask = region_mask, region_width = CFG_REGION_WIDTH,
                                    balance = balance, cap_threshold = args.cap_threshold,
-                                   cap_frac = args.cap_frac)
+                                   cap_frac = args.cap_frac, rc_augment = args.rc_aug)
     val_loader = make_dataloader(f"{DATA_DIR}/val{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                  shuffle = False, region_mask = region_mask,
                                  region_width = CFG_REGION_WIDTH)
@@ -208,12 +218,12 @@ def main():
         print(f"clipping targets to {TARGET_CLIP}; seeding output bias at "
               f"logit({mean:.4f})={bias_init:.4f}")
 
-    model = HeterogeneityScoreModel(dropout = DROPOUT, ker_size = KER_SIZE,
+    model = HeterogeneityScoreModel(dropout = args.dropout, ker_size = KER_SIZE,
                                   in_channels = in_channels,
                                   num_filters = num_filters, num_blocks = num_blocks,
                                   pool = pool, bounded = bounded, bias_init = bias_init)
 
-    trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=LR,
+    trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=args.lr,
                       weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=args.patience,
                       early_stopping=EARLY_STOPPING, checkpoint_path=checkpoint_path,
                       label_clip=label_clip, loss_weighting=loss_weighting,
