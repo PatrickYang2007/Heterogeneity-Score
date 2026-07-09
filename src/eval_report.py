@@ -54,6 +54,65 @@ def regression_metrics(preds, targets):
             "rmse": rmse, "mae": mae}
 
 
+def tail_metrics(preds, targets, quantiles=(0.80, 0.90, 0.95, 0.99)):
+    """Regression metrics restricted to the high-signal tail.
+
+    The specificity target is heavy-tailed and the rare high values are the
+    biologically important regions; a global metric is dominated by the dense
+    bulk and hides how the model does where it matters. For each quantile q, keep
+    only rows whose observed target is >= its q-quantile and recompute the
+    metrics on that subset.
+
+    Caveat when reading these: restricting to the tail truncates the target's
+    range, which mechanically attenuates Pearson/Spearman (range restriction), so
+    a tail correlation is NOT comparable to the global one -- it is only
+    comparable ACROSS models evaluated the same way. The error metrics (rmse/mae)
+    and the mean pred-vs-true recovery are the more directly interpretable "does
+    it get the tail right" numbers.
+    """
+    out = {}
+    for q in quantiles:
+        thr = float(np.quantile(targets, q))
+        sel = targets >= thr
+        if sel.sum() < 3:
+            continue
+        p_sub, t_sub = preds[sel], targets[sel]
+        pear = pearsonr(p_sub, t_sub)[0] if np.std(p_sub) > 0 and np.std(t_sub) > 0 else float("nan")
+        spear = spearmanr(p_sub, t_sub)[0] if np.std(p_sub) > 0 and np.std(t_sub) > 0 else float("nan")
+        out[f"top{int(round((1 - q) * 100))}pct"] = {
+            "threshold": thr, "n": int(sel.sum()),
+            "pearson": float(pear), "spearman": float(spear),
+            "rmse": float(np.sqrt(np.mean((t_sub - p_sub) ** 2))),
+            "mae": float(np.mean(np.abs(t_sub - p_sub))),
+            "mean_true": float(t_sub.mean()), "mean_pred": float(p_sub.mean())}
+    return out
+
+
+def stratified_metrics(preds, targets, n_bins=10):
+    """Per-quantile-bin breakdown of the fit across the target's range.
+
+    Splits observed values into `n_bins` quantile bins and reports, per bin, the
+    mean observed vs mean predicted (exposes range compression: a top bin whose
+    mean_pred sits well below mean_true is the model regressing the tail toward
+    the mean) plus within-bin RMSE and Pearson. This is the numeric companion to
+    the calibration plot and the clearest single view of tail performance.
+    """
+    edges = np.unique(np.quantile(targets, np.linspace(0, 1, n_bins + 1)))
+    idx = np.clip(np.digitize(targets, edges[1:-1]), 0, len(edges) - 2)
+    rows = []
+    for b in range(len(edges) - 1):
+        sel = idx == b
+        if sel.sum() < 3:
+            continue
+        p_sub, t_sub = preds[sel], targets[sel]
+        pear = pearsonr(p_sub, t_sub)[0] if np.std(p_sub) > 0 and np.std(t_sub) > 0 else float("nan")
+        rows.append({"bin": b, "n": int(sel.sum()),
+                     "mean_true": float(t_sub.mean()), "mean_pred": float(p_sub.mean()),
+                     "rmse": float(np.sqrt(np.mean((t_sub - p_sub) ** 2))),
+                     "pearson": float(pear)})
+    return rows
+
+
 def auroc(scores, labels):
     """AUROC via the rank (Mann-Whitney U) identity. labels in {0,1}."""
     n_pos = labels.sum()
@@ -251,7 +310,28 @@ def evaluate_split(model, split, parquet, device, threshold, bounded, out_dir,
         if cls:
             m.update(cls)
 
-    print(f"  " + "  ".join(f"{k}={v:.4f}" for k, v in m.items()))
+    # Tail-focused view: how the model does on the rare high-signal rows (the
+    # part that matters for the heavy-tailed specificity target), which the
+    # global metrics above hide.
+    tails = tail_metrics(preds, targets)
+    strata = stratified_metrics(preds, targets)
+    m["tail"] = tails
+    m["strata"] = strata
+
+    global_str = "  ".join(f"{k}={v:.4f}" for k, v in m.items()
+                           if isinstance(v, float))
+    print(f"  {global_str}")
+    print(f"  --- tail (high observed) ---")
+    for name, t in tails.items():
+        print(f"    {name:>8} (obs>={t['threshold']:.3f}, n={t['n']}): "
+              f"pearson={t['pearson']:.4f}  spearman={t['spearman']:.4f}  "
+              f"rmse={t['rmse']:.4f}  mean_true={t['mean_true']:.3f}  "
+              f"mean_pred={t['mean_pred']:.3f}")
+    print(f"  --- per-decile (mean_pred should track mean_true) ---")
+    for r in strata:
+        print(f"    bin{r['bin']:>2} (n={r['n']:>6}): mean_true={r['mean_true']:.3f}  "
+              f"mean_pred={r['mean_pred']:.3f}  rmse={r['rmse']:.4f}  "
+              f"pearson={r['pearson']:.4f}")
     return m
 
 
@@ -283,9 +363,28 @@ def write_summary(results, out_dir, args, suffix):
             row = f"{label[k]:<14}"
             for s in results:
                 v = results[s].get(k)
-                row += f"{v:>12.4f}" if v is not None else f"{'-':>12}"
+                row += f"{v:>12.4f}" if isinstance(v, float) else f"{'-':>12}"
             lines.append(row)
     lines.append("")
+
+    # Tail-focused block: metrics on the high-observed rows only, per split. The
+    # heavy-tailed specificity target's rare high values are the regions that
+    # matter, and the global table above is dominated by the dense bulk.
+    if any(results[s].get("tail") for s in results):
+        lines.append("Tail (high-observed rows only) -- see caveat: tail Pearson is")
+        lines.append("range-restricted, so compare it ACROSS models, not to the global row.")
+        for s in results:
+            tails = results[s].get("tail") or {}
+            if not tails:
+                continue
+            lines.append(f"  [{s}]")
+            for name, t in tails.items():
+                lines.append(f"    {name:>8} (obs>={t['threshold']:.3f}, n={t['n']:>7}): "
+                             f"pearson={t['pearson']:.3f}  spearman={t['spearman']:.3f}  "
+                             f"rmse={t['rmse']:.3f}  mean_true={t['mean_true']:.3f}  "
+                             f"mean_pred={t['mean_pred']:.3f}")
+        lines.append("")
+
     lines.append("Plots in this folder (per split):")
     lines.append("  pred_vs_true  - predicted vs observed (density); slope < 1 = mean regression")
     lines.append("  calibration   - binned mean pred vs observed; flat = compressed range")

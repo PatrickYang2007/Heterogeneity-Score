@@ -126,9 +126,13 @@ def main():
     # summed-bin label has no 1.0 pile-up), so force it off in aggregate mode.
     # The raw target has no pile-up either, so force it off there too.
     balance = args.balance and not aggregate and not raw_label
-    # Same for inverse-density loss weighting: it targets the per-region 1.0
-    # pile-up, so it's a no-op (forced off) on the summed-bin and raw paths.
-    loss_weighting = (None if aggregate or raw_label or args.loss_weighting == "none"
+    # Inverse-density loss weighting: originally added to fight the per-region
+    # 1.0 pile-up, but it upweights ANY sparse region of the label distribution.
+    # The raw specificity target has no pile-up yet is heavily right-skewed, so
+    # plain MSE regresses its sparse high tail toward the mean (the exact collapse
+    # seen when the raw path ran unweighted). It IS available on the raw path;
+    # only the summed-bin (aggregate) label forces it off.
+    loss_weighting = (None if aggregate or args.loss_weighting == "none"
                       else args.loss_weighting)
     # Min-MSE checkpointing favors the mean-regressed model under the spiked
     # score; the raw target isn't spiked, but Pearson is still the reported goal,
