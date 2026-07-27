@@ -5,7 +5,8 @@ import pandas as pd
 from model import load_model, region_mask_channel, center_crop
 from prepare_data import one_hot_encode
 from config import (REGION_WIDTH as CFG_REGION_WIDTH,
-                    pool_for_window, region_mask_enabled, in_channels_for)
+                    pool_for_window, region_mask_enabled, in_channels_for,
+                    check_flags_match_checkpoint)
 
 
 def predict(weight_file, input_parquet, output_file,
@@ -13,6 +14,10 @@ def predict(weight_file, input_parquet, output_file,
             bounded=True, pool=2, region_mask=False, region_width=16,
             crop=None, center_pool=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # --crop changes the input width but not any weight shape, so a mismatch
+    # would silently score the wrong context instead of raising. Warn on it.
+    check_flags_match_checkpoint(weight_file, crop=crop, center_pool=center_pool)
 
     # bounded must match training: pass --aggregate for summed-bin model weights.
     # num_filters/num_blocks must match the trained model's width/depth, and pool

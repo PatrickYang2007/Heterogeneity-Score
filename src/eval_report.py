@@ -37,7 +37,8 @@ from scipy.stats import pearsonr, spearmanr, rankdata
 
 from model import load_model, make_dataloader
 from config import (REGION_WIDTH as CFG_REGION_WIDTH,
-                    pool_for_window, region_mask_enabled, in_channels_for)
+                    pool_for_window, region_mask_enabled, in_channels_for,
+                    check_flags_match_checkpoint)
 
 
 # ----------------------------- metrics (numpy) -----------------------------
@@ -445,6 +446,11 @@ def main():
     # so it keeps the mask.
     region_mask = region_mask_enabled(args.aggregate)
     center_pool = args.center_pool and not args.aggregate
+    # A --crop mismatch cannot be caught by load_state_dict (conv layers accept
+    # any length), so cross-check the flags against the checkpoint's name tags
+    # before producing numbers that would look fine and be wrong.
+    check_flags_match_checkpoint(args.weights, crop=args.crop,
+                                 center_pool=center_pool)
     model = load_model(args.weights, device, in_channels=in_channels_for(region_mask),
                        num_filters=args.num_filters, num_blocks=args.num_blocks,
                        ker_size=args.ker_size, dropout=args.dropout, pool=pool,

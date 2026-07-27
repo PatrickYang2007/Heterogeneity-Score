@@ -191,3 +191,42 @@ def max_blocks_for(length, pool):
     while pool ** (n + 1) <= length:
         n += 1
     return n
+
+
+def check_flags_match_checkpoint(weights, crop=None, center_pool=False):
+    """Warn when eval/predict flags disagree with the checkpoint's own name tags.
+
+    --center-pool is self-enforcing: it changes the head's shape, so a mismatch
+    raises in load_state_dict. --crop is NOT. Convolutions accept any length, so
+    evaluating a model trained on a 256 bp crop with the full 2048 bp window
+    silently produces predictions on the wrong context width and quietly wrong
+    numbers -- the worst kind of failure.
+
+    train.py already encodes both in the checkpoint filename (_c256, _ctr), so
+    compare against that. This is a heuristic on a filename, hence a warning
+    rather than an error: a renamed checkpoint should not block a legitimate run.
+    """
+    import os
+    import re
+
+    name = os.path.basename(str(weights))
+    m = re.search(r"_c(\d+)", name)
+    tagged_crop = int(m.group(1)) if m else None
+    tagged_center = "_ctr" in name
+
+    problems = []
+    if tagged_crop != (crop or None):
+        problems.append(
+            f"checkpoint name implies crop={tagged_crop or 'none'} but "
+            f"--crop {crop or 'none'} was given")
+    if tagged_center != bool(center_pool):
+        problems.append(
+            f"checkpoint name implies center_pool={tagged_center} but "
+            f"--center-pool {'was' if center_pool else 'was not'} given")
+    for p in problems:
+        print(f"  !! WARNING: {p}")
+    if problems:
+        print("  !! A --crop mismatch does NOT raise -- conv layers accept any "
+              "input length -- so the metrics below would be silently wrong. "
+              "Check the flags against how the model was trained.")
+    return not problems

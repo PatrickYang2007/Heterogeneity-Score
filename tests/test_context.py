@@ -128,3 +128,30 @@ def test_plain_model_state_dict_is_unchanged_by_the_center_pool_option():
     m = HeterogeneityScoreModel(dropout=0.0, num_filters=32, num_blocks=3, pool=2)
     keys = set(m.state_dict())
     assert "fc.weight" in keys and m.fc.in_features == 32 * 4
+
+
+# ------------------- checkpoint / flag consistency guard -------------------
+
+from config import check_flags_match_checkpoint
+
+
+@pytest.mark.parametrize("name,crop,center,ok", [
+    ("best_model_w2048_b5_f64_mask.pt", None, False, True),
+    ("best_model_w2048_b5_f64_mask_c256.pt", 256, False, True),
+    ("best_model_w2048_mask_monpearson_c256_ctr.pt", 256, True, True),
+    # the silent-failure case: trained cropped, evaluated full-window
+    ("best_model_w2048_b5_f64_mask_c256.pt", None, False, False),
+    # and the reverse
+    ("best_model_w2048_b5_f64_mask.pt", 256, False, False),
+    # wrong crop width
+    ("best_model_w2048_mask_c256.pt", 512, False, False),
+    # center-pool tag present but flag missing
+    ("best_model_w2048_mask_ctr.pt", None, False, False),
+])
+def test_flag_checkpoint_consistency(name, crop, center, ok):
+    assert check_flags_match_checkpoint(name, crop=crop, center_pool=center) is ok
+
+
+def test_flag_check_handles_a_full_path():
+    assert check_flags_match_checkpoint("Models/best_model_w2048_mask_c256_ctr.pt",
+                                        crop=256, center_pool=True) is True
