@@ -31,10 +31,27 @@ for _b, _i in {"A": 0, "C": 1, "G": 2, "T": 3}.items():
     _BASE_TO_IDX[ord(_b.lower())] = _i
 
 
-def encode_indices(sequences):
-    """Encode a list of equal-length sequences to an int8 array (N, L)."""
-    arr = np.frombuffer("".join(sequences).encode("ascii"), dtype=np.uint8)
-    return _BASE_TO_IDX[arr].reshape(len(sequences), -1)
+def encode_indices(sequences, chunk=200_000):
+    """Encode a list of equal-length sequences to an int8 array (N, L).
+
+    Encodes in chunks rather than one shot. The obvious one-liner --
+    `np.frombuffer("".join(sequences).encode())` -- materializes the ENTIRE
+    dataset twice as transient objects: a single joined str and then its ascii
+    bytes copy. At 5.2M x 2048 bp that is ~11 GB each, ~22 GB of transient on top
+    of the ~11 GB list of strings and the ~11 GB output array, which is what blew
+    the 32 G training jobs. Chunking caps the transient at chunk*L bytes (~410 MB
+    at the default) and is otherwise identical.
+    """
+    n = len(sequences)
+    if n == 0:
+        return np.empty((0, 0), dtype=np.int8)
+    length = len(sequences[0])
+    out = np.empty((n, length), dtype=np.int8)
+    for i in range(0, n, chunk):
+        block = sequences[i:i + chunk]
+        buf = np.frombuffer("".join(block).encode("ascii"), dtype=np.uint8)
+        out[i:i + len(block)] = _BASE_TO_IDX[buf].reshape(len(block), length)
+    return out
 
 
 def extract_window(chrom_seq, start, end, window):

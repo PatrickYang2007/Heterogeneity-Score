@@ -72,15 +72,30 @@ class GenomicDataset(Dataset):
         # so val/test/eval/predict always see the real, untouched distribution.
         if balance:
             df = downsample_spike(df, cap_threshold, cap_frac, cap_seed)
-        sequences = df["sequence"].str.upper().tolist()
+        # Crop the SEQUENCE STRINGS before encoding, not the encoded tensor after.
+        # Cropping afterwards still builds the full-width encoding first, so a
+        # --crop 256 run peaked at the same memory as the full 2048 bp one and
+        # OOM-killed identically. Slicing here makes a narrow run genuinely ~8x
+        # lighter, which is the whole point of being able to sweep context width.
+        seq = df["sequence"]
+        if crop and crop < len(seq.iat[0]):
+            lo = len(seq.iat[0]) // 2 - crop // 2
+            seq = seq.str.slice(lo, lo + crop)
+        sequences = seq.str.upper().tolist()
+        # Drop the frame and the intermediate Series before encoding: each holds a
+        # full copy of the sequence data, and the encode step needs headroom.
+        del seq
+        df = df[["score"]].copy()
         # Store sequences as compact int8 indices (A/C/G/T=0-3, N/other=4) and
         # build the one-hot tensor on the fly in __getitem__. This keeps memory
         # flat as the window grows: a preloaded float32 one-hot would be ~18 GB
         # at 256 bp / ~36 GB at 512 bp for 4.4M rows, blowing the job's RAM,
         # whereas int8 indices are ~1-2 GB.
         self.x = torch.from_numpy(encode_indices(sequences))
-        # Crop once here rather than per __getitem__: it shrinks the stored index
-        # tensor too, so a narrow-context run also costs proportionally less RAM.
+        del sequences
+        # Belt-and-braces: the strings were already sliced above, so this is a
+        # no-op on that path. It still guards the case where a caller hands in
+        # pre-encoded rows wider than `crop`.
         self.x = center_crop(self.x, crop)
         self.y = torch.tensor(df["score"].values, dtype=torch.float32)
         # Optional 5th channel marking the central region. It's identical for

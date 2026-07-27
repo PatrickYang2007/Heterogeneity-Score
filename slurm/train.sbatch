@@ -5,7 +5,7 @@
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=96G
 #SBATCH --time=16:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=pattyyang1@gmail.com
