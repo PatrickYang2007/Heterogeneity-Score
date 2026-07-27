@@ -68,9 +68,30 @@ more sequence than the signal supports, and it is not free:
 
 - the labelled 16 bp becomes 1 of 64 positions after 5 pool-2 blocks, and
   `AttentionPool` returns a softmax-weighted **average** over all of them;
-- 8× more sequence to memorize — these runs overfit by **epoch 2** (`logs/train_model.7433705.out`:
-  train loss falls monotonically while val loss goes 0.36 → 1.31);
 - 8× the compute per epoch (~45 min/epoch).
+
+**Correction (measured after this section was written).** An earlier draft also
+claimed the wide window drives the epoch-2 overfitting ("8× more sequence to
+memorize"). **That is wrong.** A context sweep on the regenerated data
+(`--crop 256/512` vs full 2048 bp, jobs 7992482–4 / 7993257) shows the cropped runs
+peak at epoch **1–2** — *earlier* than the full-window run's epoch 6 — so narrowing
+the context does not delay overfitting at all. Every config plateaus almost
+immediately and lands within 0.006 of the others on test:
+
+| context | val Pearson | test Pearson | best epoch | wall time |
+|---|---|---|---|---|
+| 2048 bp | 0.7073 | (pending) | 6 | 3 h 14+ |
+| 512 bp | 0.7180 | 0.6902 | 1 | 1 h 10 |
+| 256 bp | 0.7123 | 0.6870 | 2 | 0 h 30 |
+| 256 bp + center-pool | 0.7110 | 0.6933 | 1 | 0 h 42 |
+
+So the case for a narrow window is **compute, not accuracy**: 512 bp reaches a
+better val score at epoch 1 (~6 min) than 2048 bp reaches at epoch 6 (~2 h),
+roughly 20× cheaper. On test the ordering even flips (center-pool best, 256 bp
+worst) and the whole spread is 0.006, i.e. noise. Context width is *not* the
+binding constraint, and neither is the attention-pool dilution — giving the head
+the labelled region's features directly (`--center-pool`) did not help either.
+The real gap remains §2: ~0.69 test against a 0.774 smoothed-label ceiling.
 
 Direct check on the trained model: shifting the input window by 16 bp — one whole
 region — moves the prediction by 0.021 on a prediction std of 0.194
