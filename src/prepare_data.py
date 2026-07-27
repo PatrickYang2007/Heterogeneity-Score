@@ -1,3 +1,4 @@
+import argparse
 import pandas as pd
 from pyfaidx import Fasta
 import numpy as np
@@ -5,7 +6,7 @@ import shlex
 import subprocess
 import os
 
-from config import WINDOW, DEDUP_REGIONS, PEAK_FILTER
+from config import DEDUP_REGIONS, PEAK_FILTER
 
 
 def one_hot_encode(sequences):
@@ -255,9 +256,17 @@ def filter_by_macs2_peaks(df, peak_path):
 def prepare_data(bedgraph_path, genome_path, out_dir, train_chroms, val_chroms,
                  cutoff=2.0, min_length=200, max_gap=100, peak_path=None,
                  window=None, dedup=True, peak_filter=False,
-                 keep_annotations=True):
+                 keep_annotations=True, chroms=None):
     print("Loading bedgraph...")
     df = load_bedgraph(bedgraph_path, annotations=keep_annotations)
+
+    # Optional chromosome restriction, for cheap dress-rehearsal runs that
+    # exercise the whole pipeline (dedup -> sequence extraction -> split ->
+    # parquet) in minutes instead of hours before committing to the full genome.
+    if chroms:
+        before = len(df)
+        df = df[df["chrom"].isin(chroms)].reset_index(drop=True)
+        print(f"  --chroms {chroms}: {before:,} -> {len(df):,} regions")
 
     # Collapse annotation-duplicated intervals BEFORE sequence extraction: the
     # duplicates are identical rows, so extracting each one's sequence twice is
@@ -344,16 +353,42 @@ MACS2_CUTOFF = 0.75
 MACS2_MIN_LENGTH = 200
 MACS2_MAX_GAP = 100
 
-# Sequence window width fed to the model is imported from config.py (the single
-# source of truth shared with widen_windows.py / train.py). The raw regions are
-# 16 bp, too short to carry much regulatory context; widening symmetrically
-# around each region's center gives flanking sequence while keeping the same
-# per-region score as the label. Set WINDOW=None in config.py to keep the
-# original 16 bp regions. To re-extract wider windows from the EXISTING splits
-# without re-running MACS2, use widen_windows.py instead.
+# This script writes the BASE splits at the bedgraph's raw 16 bp region width.
+# Widening is widen_windows.py's job: it re-extracts wider windows from these
+# splits (reading config.WINDOW) without redoing the bedgraph parse, dedup, or
+# peak steps, so window-size sweeps are cheap. Pass --window N here only if you
+# deliberately want wide base splits -- at 2048 bp that is ~13 GB of sequence
+# strings for 6.5M regions, which will not fit the job's 32-64 G ask.
+
+
+def parse_args():
+    ap = argparse.ArgumentParser(description=__doc__)
+    # Default None = keep the bedgraph's raw 16 bp regions. This is deliberately
+    # NOT config.WINDOW: widening belongs to widen_windows.py, which re-extracts
+    # wider windows from these base splits without re-running the expensive
+    # bedgraph/dedup/peak steps. Doing it here instead would (a) duplicate that
+    # work and (b) blow the job's memory -- 6.5M regions x 2048 bp is ~13 GB of
+    # sequence strings before pandas overhead, against a 32 G ask. Pass
+    # --window N only if you deliberately want wide base splits.
+    ap.add_argument("--window", type=int, default=None,
+                    help="width of the sequence stored per region (default: the "
+                         "raw 16 bp region; widen later with widen_windows.py)")
+    ap.add_argument("--dedup", dest="dedup", action="store_true")
+    ap.add_argument("--no-dedup", dest="dedup", action="store_false",
+                    help="keep annotation-duplicated rows (the old behavior)")
+    ap.set_defaults(dedup=DEDUP_REGIONS)
+    ap.add_argument("--peak-filter", dest="peak_filter", action="store_true",
+                    help="run MACS2 bdgpeakcall and keep only peak-overlapping "
+                         "regions (see PEAK_FILTER in config.py -- it is broken "
+                         "on this bedgraph)")
+    ap.set_defaults(peak_filter=PEAK_FILTER)
+    ap.add_argument("--chroms", nargs="+", default=None,
+                    help="restrict to these chromosomes (dress-rehearsal runs)")
+    return ap.parse_args()
 
 
 def main():
+    args = parse_args()
     prepare_data(
         bedgraph_path=BEDGRAPH_PATH,
         genome_path=GENOME_PATH,
@@ -363,9 +398,10 @@ def main():
         cutoff=MACS2_CUTOFF,
         min_length=MACS2_MIN_LENGTH,
         max_gap=MACS2_MAX_GAP,
-        window=WINDOW,
-        dedup=DEDUP_REGIONS,
-        peak_filter=PEAK_FILTER,
+        window=args.window,
+        dedup=args.dedup,
+        peak_filter=args.peak_filter,
+        chroms=args.chroms,
     )
 
 
