@@ -48,10 +48,24 @@ def downsample_spike(df, threshold, keep_frac, seed=0):
     return out
 
 
+def center_crop(x, crop):
+    """Keep the central `crop` positions along the last axis of `x`.
+
+    Lets a context-width sweep reuse the existing WINDOW bp parquet instead of
+    regenerating multi-GB files per width: the row still stores 2048 bp, the model
+    is handed the central `crop` bp. Because widen_windows.py centers every window
+    on its region's midpoint, the labeled region stays centered after cropping.
+    """
+    if not crop or crop >= x.shape[-1]:
+        return x
+    lo = x.shape[-1] // 2 - crop // 2
+    return x[..., lo:lo + crop]
+
+
 class GenomicDataset(Dataset):
     def __init__(self, parquet_path, region_mask=False, region_width=16,
                  balance=False, cap_threshold=1.0, cap_frac=0.3, cap_seed=0,
-                 rc_augment=False):
+                 rc_augment=False, crop=None):
         df = pd.read_parquet(parquet_path, columns=["sequence", "score"])
         # Optional train-only rebalancing: when `balance` is on, thin the
         # score>=cap_threshold spike down to cap_frac of its rows. Off by default,
@@ -65,6 +79,9 @@ class GenomicDataset(Dataset):
         # at 256 bp / ~36 GB at 512 bp for 4.4M rows, blowing the job's RAM,
         # whereas int8 indices are ~1-2 GB.
         self.x = torch.from_numpy(encode_indices(sequences))
+        # Crop once here rather than per __getitem__: it shrinks the stored index
+        # tensor too, so a narrow-context run also costs proportionally less RAM.
+        self.x = center_crop(self.x, crop)
         self.y = torch.tensor(df["score"].values, dtype=torch.float32)
         # Optional 5th channel marking the central region. It's identical for
         # every row (windows are region-centered), so build it once here and
@@ -102,10 +119,11 @@ class GenomicDataset(Dataset):
 def make_dataloader(parquet_path, batch_size = 64, shuffle = True, num_workers = 4,
                     region_mask = False, region_width = 16,
                     balance = False, cap_threshold = 1.0, cap_frac = 0.3, cap_seed = 0,
-                    rc_augment = False):
+                    rc_augment = False, crop = None):
     ds = GenomicDataset(parquet_path, region_mask=region_mask, region_width=region_width,
                         balance=balance, cap_threshold=cap_threshold,
-                        cap_frac=cap_frac, cap_seed=cap_seed, rc_augment=rc_augment)
+                        cap_frac=cap_frac, cap_seed=cap_seed, rc_augment=rc_augment,
+                        crop=crop)
     return DataLoader(ds, batch_size = batch_size, shuffle = shuffle,
                       num_workers = num_workers, pin_memory = True)
 
@@ -147,7 +165,8 @@ class AttentionPool(nn.Module):
 
 class HeterogeneityScoreModel(nn.Module):
     def __init__(self, dropout, ker_size=5, in_channels=4, num_filters=32,
-                 num_blocks=3, pool=2, bounded=True, bias_init=None):
+                 num_blocks=3, pool=2, bounded=True, bias_init=None,
+                 center_pool=False):
         super().__init__()
         # Stack `num_blocks` conv blocks; channels double each block
         # (num_filters, num_filters*2, num_filters*4, ...). Raise num_blocks for
@@ -181,7 +200,16 @@ class HeterogeneityScoreModel(nn.Module):
             dim = out
 
         self.pool = AttentionPool(dim)
-        self.fc = nn.Linear(dim, 1)
+        # Center-anchored head. The label describes the central REGION_WIDTH bp,
+        # but AttentionPool returns a softmax-weighted AVERAGE over every output
+        # position (64 of them at 2048 bp with 5 pool-2 blocks), so the labeled
+        # region contributes ~1/64 of the vector the head sees and the region-mask
+        # channel can only nudge the weights. With center_pool on, the head also
+        # gets the feature column sitting directly over the region:
+        # fc([attention_pool(x) ; x[:, :, center]]). That is why the head input
+        # doubles to 2*dim.
+        self.center_pool = center_pool
+        self.fc = nn.Linear(dim * (2 if center_pool else 1), 1)
 
         # Seed the output bias so a bounded (sigmoid) model starts at the label
         # mean instead of sigmoid(0)=0.5. With a 0 bias the output begins at 0.5,
@@ -204,23 +232,29 @@ class HeterogeneityScoreModel(nn.Module):
                 )
         for block in self._blocks:
             x = block(x)
-        x = self.pool(x)
-        x = self.fc(x)
-        return torch.sigmoid(x) if self.bounded else x
+        pooled = self.pool(x)                      # (batch, dim) global context
+        if self.center_pool:
+            # The column of features over the window's midpoint, i.e. over the
+            # 16 bp region the label actually describes.
+            center = x[:, :, x.shape[-1] // 2]     # (batch, dim)
+            pooled = torch.cat([pooled, center], dim=1)
+        out = self.fc(pooled)
+        return torch.sigmoid(out) if self.bounded else out
 
 
 def load_model(weight_file, device, in_channels=4, num_filters=32, num_blocks=3,
-               ker_size=5, dropout=0.3, pool=2, bounded=True):
+               ker_size=5, dropout=0.3, pool=2, bounded=True, center_pool=False):
     """Build a HeterogeneityScoreModel, load a checkpoint into it, and put it on
     `device` in eval mode.
 
     Shared by predict.py and eval_report.py so inference always reconstructs the
     architecture the same way. The arch args (in_channels, num_filters,
-    num_blocks, ker_size, pool) and `bounded` must match how the weights were
-    trained, or load_state_dict will fail on a shape/key mismatch.
+    num_blocks, ker_size, pool, center_pool) and `bounded` must match how the
+    weights were trained, or load_state_dict will fail on a shape/key mismatch.
     """
     model = HeterogeneityScoreModel(dropout=dropout, ker_size=ker_size,
                                     in_channels=in_channels, num_filters=num_filters,
-                                    num_blocks=num_blocks, pool=pool, bounded=bounded)
+                                    num_blocks=num_blocks, pool=pool, bounded=bounded,
+                                    center_pool=center_pool)
     model.load_state_dict(torch.load(weight_file, map_location=device))
     return model.to(device).eval()

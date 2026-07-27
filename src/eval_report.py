@@ -292,10 +292,11 @@ def plot_roc_pr(preds, targets, threshold, split, out_dir):
 # ----------------------------- driver -----------------------------
 
 def evaluate_split(model, split, parquet, device, threshold, bounded, out_dir,
-                   region_mask=False, region_width=16):
+                   region_mask=False, region_width=16, crop=None):
     print(f"[{split}] {parquet}")
     loader = make_dataloader(parquet, shuffle=False,
-                             region_mask=region_mask, region_width=region_width)
+                             region_mask=region_mask, region_width=region_width,
+                             crop=crop)
     preds, targets = get_predictions(model, loader, device)
     chroms = pd.read_parquet(parquet, columns=["chrom"])["chrom"].to_numpy()
 
@@ -416,6 +417,14 @@ def main():
                    help="must match the trained model's depth")
     p.add_argument("--ker-size", type=int, default=5)
     p.add_argument("--dropout", type=float, default=0.3)
+    # Must match training: --crop changes the input length the weights expect to
+    # see, --center-pool changes the head's shape (load_state_dict will fail on a
+    # mismatch for the latter, but --crop would silently evaluate on the wrong
+    # context width, so pass both).
+    p.add_argument("--crop", type=int, default=None,
+                   help="evaluate on the central N bp (must match training)")
+    p.add_argument("--center-pool", dest="center_pool", action="store_true",
+                   help="weights were trained with the center-anchored head")
     args = p.parse_args()
 
     # The raw-signal model is per-region (no _agg) but uses the linear head, and
@@ -435,11 +444,13 @@ def main():
     # channels), the summed-bin path does not. The raw-signal path is per-region,
     # so it keeps the mask.
     region_mask = region_mask_enabled(args.aggregate)
+    center_pool = args.center_pool and not args.aggregate
     model = load_model(args.weights, device, in_channels=in_channels_for(region_mask),
                        num_filters=args.num_filters, num_blocks=args.num_blocks,
                        ker_size=args.ker_size, dropout=args.dropout, pool=pool,
-                       bounded=bounded)
-    print(f"Loaded {args.weights} (device={device}, bounded={bounded})")
+                       bounded=bounded, center_pool=center_pool)
+    print(f"Loaded {args.weights} (device={device}, bounded={bounded}, "
+          f"center_pool={center_pool}, crop={args.crop or 'none'})")
 
     results = {}
     for split in ["val", "test"]:
@@ -450,7 +461,8 @@ def main():
         results[split] = evaluate_split(model, split, parquet, device,
                                         args.threshold, bounded, out_dir,
                                         region_mask=region_mask,
-                                        region_width=CFG_REGION_WIDTH)
+                                        region_width=CFG_REGION_WIDTH,
+                                        crop=args.crop)
 
     with open(f"{out_dir}/metrics.json", "w") as f:
         json.dump(results, f, indent=2)

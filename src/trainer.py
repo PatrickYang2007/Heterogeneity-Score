@@ -57,8 +57,14 @@ class Trainer:
         self.model = self.model.to(self.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=lr,
                                             weight_decay=weight_decay)
+        # The scheduler must plateau on the SAME metric that selects the
+        # checkpoint. It used to always watch val_loss (mode='min') even when
+        # monitor="pearson", and the two can diverge sharply: in the raw-label
+        # runs val_loss blew up 0.36 -> 1.31 while val Pearson held ~0.5, so the
+        # LR kept getting halved because of a metric nobody was optimizing.
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            self.optimizer, mode='min', factor=0.5, patience=5)
+            self.optimizer, mode='max' if monitor == 'pearson' else 'min',
+            factor=0.5, patience=5)
         self.loss_fn = nn.MSELoss()
         self.grad_clip = grad_clip
         self.patience = patience
@@ -155,7 +161,14 @@ class Trainer:
         for epoch in range(self.num_epochs):
             train_loss = self.train_epoch()
             val_loss, corr, pred_std = self.val_epoch()
-            self.scheduler.step(val_loss)
+            # Step the scheduler on whatever metric is being monitored. A
+            # collapsed epoch gives corr=nan; feed the worst possible value
+            # instead so it counts as "no improvement" rather than poisoning the
+            # scheduler's best-so-far comparison.
+            if self.monitor == "pearson":
+                self.scheduler.step(-1.0 if math.isnan(corr) else corr)
+            else:
+                self.scheduler.step(val_loss)
 
             train_losses.append(train_loss)
             val_losses.append(val_loss)

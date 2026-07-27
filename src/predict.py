@@ -2,7 +2,7 @@ import argparse
 import torch
 import pandas as pd
 
-from model import load_model, region_mask_channel
+from model import load_model, region_mask_channel, center_crop
 from prepare_data import one_hot_encode
 from config import (REGION_WIDTH as CFG_REGION_WIDTH,
                     pool_for_window, region_mask_enabled, in_channels_for)
@@ -10,7 +10,8 @@ from config import (REGION_WIDTH as CFG_REGION_WIDTH,
 
 def predict(weight_file, input_parquet, output_file,
             num_filters=32, num_blocks=3, ker_size=5, dropout=0.3, batch_size=64,
-            bounded=True, pool=2, region_mask=False, region_width=16):
+            bounded=True, pool=2, region_mask=False, region_width=16,
+            crop=None, center_pool=False):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # bounded must match training: pass --aggregate for summed-bin model weights.
@@ -20,12 +21,16 @@ def predict(weight_file, input_parquet, output_file,
     # region-mask channel must match too: a masked model takes in_channels=5.
     model = load_model(weight_file, device, in_channels=in_channels_for(region_mask),
                        num_filters=num_filters, num_blocks=num_blocks,
-                       ker_size=ker_size, dropout=dropout, pool=pool, bounded=bounded)
+                       ker_size=ker_size, dropout=dropout, pool=pool, bounded=bounded,
+                       center_pool=center_pool)
 
     df = pd.read_parquet(input_parquet)
     sequences = df["sequence"].str.upper().tolist()
     encoded = one_hot_encode(sequences)
     x = torch.from_numpy(encoded.transpose(0, 2, 1).astype("float32"))
+    # Same center crop the dataset applies during training; the mask below is then
+    # built at the cropped length so it still marks the central region.
+    x = center_crop(x, crop)
     if region_mask:
         # Append the same central-region marker the dataset adds during training.
         mask = region_mask_channel(x.shape[-1], region_width).expand(x.shape[0], 1, -1)
@@ -64,6 +69,11 @@ def main():
     parser.add_argument("--raw-label", dest="raw_label", action="store_true",
                         help="weights are from a raw-signal model (per-region, linear "
                              "output); keeps the region-mask channel")
+    # Must match training (see train.py --crop / --center-pool).
+    parser.add_argument("--crop", type=int, default=None,
+                        help="feed only the central N bp (must match training)")
+    parser.add_argument("--center-pool", dest="center_pool", action="store_true",
+                        help="weights were trained with the center-anchored head")
     args = parser.parse_args()
 
     # Match train.py / eval_report.py: any window pools by 2, the raw 16 bp path
@@ -88,6 +98,8 @@ def main():
         pool=pool,
         region_mask=region_mask,
         region_width=CFG_REGION_WIDTH,
+        crop=args.crop,
+        center_pool=args.center_pool and not args.aggregate,
     )
 
 

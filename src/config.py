@@ -78,6 +78,62 @@ MONITOR = "loss"
 # with --raw-label/--no-raw-label. Ignored for the summed-bin (AGGREGATE) path.
 RAW_LABEL = False
 
+# Drop duplicate regions in prepare_data.py. The source bedgraph is annotated,
+# not deduplicated: the same 16 bp interval is emitted once per overlapping
+# annotation (gene x feature class), so a locus in a region with two overlapping
+# genes appears twice with the SAME score. Measured on the current splits, 37-39%
+# of rows are exact duplicates of another row (up to 9 copies of one locus).
+#
+# That silently reweights training: duplication multiplicity anti-correlates with
+# the label (multiplicity 1 -> mean score 0.79, multiplicity 5 -> 0.49), so the
+# low-score tail is oversampled 3-5x relative to the real per-locus distribution.
+# It also makes val/test metrics per-ROW rather than per-LOCUS, which is not the
+# quantity being reported. Leave this on unless you specifically want the old
+# annotation-weighted behavior.
+DEDUP_REGIONS = True
+
+# Run MACS2 bdgpeakcall and keep only regions overlapping a called peak.
+#
+# OFF by default because on this bedgraph it does not work. bdgpeakcall assumes a
+# position-sorted coverage track; this file is sorted by ANNOTATION CLASS first
+# (it restarts the genome 12 times -- 3primeUTR, 5primeUTR, CA, ..., pELS -- with
+# 5.77M chromosome switches), so MACS2 saw a wildly non-monotonic coordinate
+# stream and emitted 46 nonsensical "peaks" spanning up to 203 Mb, overlapping and
+# nested. Filtering on those dropped ~48% of the data on an arbitrary,
+# chromosome-uneven basis (chr16 kept only 2.2 Mb of 90 Mb; chr2 kept one 203 Mb
+# "peak"). prepare_data.py now sorts by position before calling MACS2, which is
+# necessary but probably not sufficient -- a 0-1 bounded score is not the signal
+# bdgpeakcall was designed for. Verify the peak file looks sane before trusting it.
+PEAK_FILTER = False
+
+# Crop the central CROP bp out of each window at load time (None = use the full
+# window). This exists so context width can be swept WITHOUT regenerating the
+# multi-GB parquet files: the data stays at WINDOW bp and the dataset hands the
+# model the central CROP bp.
+#
+# Why it matters: sequence composition predicts the label best at ~256 bp of
+# context and gets monotonically WORSE beyond that (test Pearson of a GC/CpG
+# linear model: 128bp 0.590, 256bp 0.605, 512bp 0.602, 1024bp 0.588, 2048bp 0.556;
+# adding wide context on top of the central 256 bp is worth +0.005). The label is
+# a local property, so the 2048 bp window is ~8x more sequence than the signal
+# supports -- it dilutes the attention pool, forces 5 pooling blocks, and gives
+# the model 8x more to memorize (these runs overfit by epoch 2). Overridable per
+# run with --crop.
+CROP = None
+
+# Concatenate the center-position features onto the attention-pooled vector
+# before the output head (per-region path only).
+#
+# The label describes the central REGION_WIDTH bp, but AttentionPool softmaxes
+# over the whole window and returns a weighted average, so the labeled region is
+# one of WINDOW/pool**num_blocks positions (1 of 64 at 2048 bp with 5 blocks) and
+# its contribution is averaged away. REGION_MASK marks where it is, but the head
+# still only ever sees the pooled average. When CENTER_POOL is on, the head gets
+# [attention_pool(x) ; x[:, :, center]] -- the global context AND the features
+# actually over the labeled region. Doubles the head's input width; ignored on
+# the summed-bin (AGGREGATE) path, which has no single central region.
+CENTER_POOL = False
+
 
 # --------------------------------------------------------------------------
 # Derived settings. train.py / predict.py / eval_report.py all need the same
@@ -106,3 +162,32 @@ def region_mask_enabled(aggregate):
 def in_channels_for(region_mask):
     """Model input channels: 4 base one-hot, plus 1 for the region mask."""
     return 5 if region_mask else 4
+
+
+def effective_width(window, crop=None):
+    """Sequence length the MODEL actually sees, after any center crop.
+
+    The parquet holds `window` bp per row; --crop hands the model only the
+    central `crop` bp of that. Everything downstream that depends on input
+    length -- the max blocks that still fit under pooling, the region-mask
+    channel's length, predict.py's cropping -- must use this, not `window`.
+    """
+    if not crop or not window or crop >= window:
+        return window
+    return crop
+
+
+def max_blocks_for(length, pool):
+    """Deepest block stack whose pooling does not shrink `length` below 1.
+
+    Each pooled block divides the length by `pool`, so `pool**num_blocks` must
+    stay <= length. Cropping shortens the input, which lowers this ceiling --
+    e.g. 5 blocks need >= 32 bp, but a 256 bp crop leaves only 8 output
+    positions for the attention pool to work with.
+    """
+    if not length or not pool or pool <= 1:
+        return None
+    n = 0
+    while pool ** (n + 1) <= length:
+        n += 1
+    return n

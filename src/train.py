@@ -17,7 +17,10 @@ from config import (WINDOW as CFG_WINDOW, AGGREGATE as CFG_AGGREGATE,
                     LOSS_WEIGHTING as CFG_LOSS_WEIGHTING,
                     MONITOR as CFG_MONITOR,
                     RAW_LABEL as CFG_RAW_LABEL,
-                    pool_for_window, region_mask_enabled, in_channels_for)
+                    CROP as CFG_CROP,
+                    CENTER_POOL as CFG_CENTER_POOL,
+                    pool_for_window, region_mask_enabled, in_channels_for,
+                    effective_width, max_blocks_for)
 
 
 def plot_loss_curves(train_losses, val_losses, out_dir, filename="loss_curves.png"):
@@ -111,6 +114,21 @@ def parse_args():
                         help=f"initial learning rate (default {LR:g})")
     parser.add_argument("--dropout", type=float, default=DROPOUT,
                         help=f"dropout in each conv block (default {DROPOUT})")
+    # Context width, swept WITHOUT regenerating data: the parquet keeps its
+    # WINDOW bp rows and the dataset hands the model the central --crop bp.
+    # Composition analysis puts the label's information at ~256 bp of context,
+    # decaying beyond that, so this is the cheapest lever worth sweeping.
+    parser.add_argument("--crop", type=int, default=CFG_CROP,
+                        help="use only the central N bp of each window "
+                             f"(default from config: {CFG_CROP})")
+    # Give the output head the features over the labeled region, not just the
+    # attention-pooled window average.
+    parser.add_argument("--center-pool", dest="center_pool", action="store_true",
+                        help="concatenate the center-position features onto the "
+                             "attention-pooled vector before the head")
+    parser.add_argument("--no-center-pool", dest="center_pool", action="store_false",
+                        help="head sees the attention-pooled vector only")
+    parser.set_defaults(center_pool=CFG_CENTER_POOL)
     return parser.parse_args()
 
 
@@ -149,6 +167,20 @@ def main():
     region_mask = region_mask_enabled(aggregate)
     in_channels = in_channels_for(region_mask)
 
+    # Center-cropping shortens the input, so the block stack may no longer fit
+    # under pooling (5 pool-2 blocks need >= 32 bp, and leave a 256 bp crop with
+    # only 8 positions for the attention pool). Fail here with a clear message
+    # rather than deep inside forward() after the data has loaded.
+    crop = args.crop if not aggregate else None
+    width = effective_width(window, crop)
+    cap = max_blocks_for(width, pool)
+    if cap is not None and num_blocks > cap:
+        raise SystemExit(
+            f"--num-blocks {num_blocks} does not fit a {width} bp input with "
+            f"pool={pool} (max {cap}). Lower --num-blocks or raise --crop.")
+    # Center pooling only makes sense where there IS a center region to anchor on.
+    center_pool = args.center_pool and not aggregate
+
     # Data suffix depends only on window/aggregate (architecture doesn't change
     # the data). The arch tag is appended to OUTPUT names only when capacity is
     # non-default, so complexity sweeps get distinct checkpoints without
@@ -182,9 +214,17 @@ def main():
         feat += "_idw"
     if monitor != "loss":
         feat += f"_mon{monitor}"
-    print(f"Training: window={window}  aggregate={aggregate}  raw_label={raw_label}  "
+    # Crop / center-pool runs get their own tag: same data file, different input
+    # width and head shape, so their checkpoints must not collide with the
+    # full-window baseline's.
+    if crop:
+        feat += f"_c{crop}"
+    if center_pool:
+        feat += "_ctr"
+    print(f"Training: window={window}  crop={crop or 'none'} (model sees {width} bp)  "
+          f"aggregate={aggregate}  raw_label={raw_label}  "
           f"blocks={num_blocks}  filters={num_filters}  region_mask={region_mask}  "
-          f"balance={balance}"
+          f"center_pool={center_pool}  balance={balance}"
           + (f" (keep {args.cap_frac:g} of score>={args.cap_threshold:g})" if balance else "")
           + f"  loss_weighting={loss_weighting or 'none'}  monitor={monitor}"
           + f"  -> data{data_suffix}.parquet")
@@ -194,10 +234,11 @@ def main():
     train_loader = make_dataloader(f"{DATA_DIR}/train{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                    region_mask = region_mask, region_width = CFG_REGION_WIDTH,
                                    balance = balance, cap_threshold = args.cap_threshold,
-                                   cap_frac = args.cap_frac, rc_augment = args.rc_aug)
+                                   cap_frac = args.cap_frac, rc_augment = args.rc_aug,
+                                   crop = crop)
     val_loader = make_dataloader(f"{DATA_DIR}/val{data_suffix}.parquet", batch_size = BATCH_SIZE,
                                  shuffle = False, region_mask = region_mask,
-                                 region_width = CFG_REGION_WIDTH)
+                                 region_width = CFG_REGION_WIDTH, crop = crop)
 
     # Each experiment saves to its own checkpoint/plot under Models/ so parallel
     # runs don't overwrite each other (e.g. best_model_w2048.pt vs _agg2048.pt,
@@ -225,7 +266,8 @@ def main():
     model = HeterogeneityScoreModel(dropout = args.dropout, ker_size = KER_SIZE,
                                   in_channels = in_channels,
                                   num_filters = num_filters, num_blocks = num_blocks,
-                                  pool = pool, bounded = bounded, bias_init = bias_init)
+                                  pool = pool, bounded = bounded, bias_init = bias_init,
+                                  center_pool = center_pool)
 
     trainer = Trainer(model, train_loader, val_loader, num_epochs=EPOCHS, lr=args.lr,
                       weight_decay=WEIGHT_DECAY, grad_clip=GRAD_CLIP, patience=args.patience,
