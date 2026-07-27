@@ -10,10 +10,10 @@ The pipeline turns a scored bedgraph into `(sequence, score)` examples, encodes
 the DNA as one-hot, and trains a CNN to regress the score from sequence alone.
 
 ```
-bedgraph (chrom, start, end, score)
+bedgraph (chrom, start, end, score, feature, gene)
       │
       ▼
-prepare_data.py ──► MACS2 peak filtering ──► chrom split ──► data/{train,val,test}.parquet
+prepare_data.py ──► dedup ──► [optional MACS2 filter] ──► chrom split ──► data/{train,val,test}.parquet
       │
       ▼  (optional: widen the 16 bp regions to a larger context window)
 widen_windows.py ──► data/{train,val,test}_w256.parquet
@@ -22,8 +22,15 @@ widen_windows.py ──► data/{train,val,test}_w256.parquet
 train.py ──► model.py (CNN) + trainer.py (Trainer) ──► best_model.pt
       │
       ▼
-eval_report.py / predict.py
+eval_report.py / predict.py        baselines.py (what the model must beat)
 ```
+
+> **Read [`docs/FINDINGS.md`](docs/FINDINGS.md) before running anything.** An audit
+> found two data-prep bugs that were corrupting the dataset (annotation-duplicated
+> rows, and a MACS2 filter that discarded ~48% of the data on 46 degenerate
+> multi-megabase "peaks"), and established that the current CNN only narrowly beats
+> a six-parameter GC/CpG baseline. Both bugs are fixed here, but **the data must be
+> regenerated** and metrics from before the fix are not comparable to metrics after.
 
 ## Data representation
 
@@ -38,6 +45,12 @@ The raw input is fixed by the bedgraph: each region is 16 bp with a single score
   `None` to keep the raw 16 bp). 16 bp is too little context to learn from, so
   `widen_windows.py` re-extracts a wider window centered on each region's
   midpoint, padding with `N` at chromosome ends. Re-run it to change the width.
+- **Context crop** (`CROP` / `--crop`). Sweeps context width *without*
+  regenerating the multi-GB parquets: the row still stores `WINDOW` bp, the model
+  is handed the central `CROP` bp. Because windows are region-centered, the label's
+  region stays centered after cropping. Measured composition fit peaks at ~256 bp
+  of context and decays out to 2048 bp, so 2048 is likely 8× more sequence than
+  the signal supports — see [`docs/FINDINGS.md`](docs/FINDINGS.md) §3.
 - **Label / representation** (`AGGREGATE` in `src/config.py`). `False` keeps the
   per-region score pinned to its original region (the flanking bases are context
   only); `True` switches to a summed-bin label on a different scale. See
@@ -69,6 +82,15 @@ Model capacity is configurable without editing layers, via flags on `train.py`:
 |---|---|---|
 | `--num-filters` | width (channels in the first block) | 32 |
 | `--num-blocks` | depth (number of conv blocks) | 3 |
+| `--crop` | use only the central N bp of each window | off |
+| `--center-pool` | head also reads the features over the labeled region | off |
+
+`--center-pool` addresses a structural mismatch: the label describes the central
+16 bp, but `AttentionPool` returns a softmax-weighted **average** over every output
+position (64 of them at 2048 bp with 5 blocks), so the labeled region contributes
+~1/64 of what the head sees. With the flag on, the head gets
+`[attention_pool(x) ; x[:, :, center]]` — global context *and* the labeled region.
+It changes the head's shape, so pass the same flag to `eval_report.py`/`predict.py`.
 
 ```bash
 sbatch slurm/train.sbatch --num-blocks 5 --num-filters 64
@@ -104,6 +126,51 @@ regions whose center falls inside it. Because the label is a sum (range
 (`bounded=False`, handled automatically when `AGGREGATE=True`). Note that
 MSE/loss values are **not** comparable between the two modes because the labels
 live on different scales — compare them by Pearson/Spearman correlation instead.
+
+## Data integrity (read before regenerating)
+
+Two `prepare_data.py` steps were corrupting the dataset; both are fixed and both
+are toggles in `src/config.py`. Full evidence in [`docs/FINDINGS.md`](docs/FINDINGS.md).
+
+- **`DEDUP_REGIONS`** (default **on**). The bedgraph is annotated, not
+  deduplicated — it emits one row per (interval × overlapping annotation), so the
+  same 16 bp interval appears up to 9 times with the same score. **37–39% of rows
+  in every split are duplicates.** Multiplicity anti-correlates with the label
+  (multiplicity 1 → mean score 0.79, 5 → 0.49), so leaving them in oversamples the
+  low-score tail 3–5× in training and makes val/test metrics per-row rather than
+  per-locus. Deduplication refuses to run if duplicates disagree on the score.
+
+- **`PEAK_FILTER`** (default **off**). The MACS2 filter used to be unconditional
+  and dropped ~48% of regions — on the basis of 46 "peaks" spanning up to 203 Mb,
+  overlapping and nested. `bdgpeakcall` needs a position-sorted track, and this
+  bedgraph is sorted by *annotation class* first (it restarts the genome 12 times).
+  MACS2 exits 0 on that input and writes a plausible-looking file anyway.
+  `prepare_data.py` now sorts before calling MACS2 and warns via
+  `check_peaks_sane()`, but inspect `data/peaks.bed` before re-enabling this.
+
+Annotation columns (`feature`, `gene`) now ride along into the parquets for
+stratified evaluation. They are **never** model inputs — the model predicts from
+sequence alone.
+
+## Baselines
+
+`src/baselines.py` computes what any architecture change has to beat. Run it
+alongside every eval; a model that doesn't pull away from the composition baseline
+hasn't learned sequence grammar.
+
+```bash
+python src/baselines.py --sample 20000
+```
+
+| baseline | what it measures | test Pearson |
+|---|---|---|
+| composition (GC/CpG, central 256 bp) | how far 6 numbers get you | 0.604 |
+| k-mer ridge | composition without positional information | 0.597 |
+| smoothed label (±1024 bp, leave-one-out) | ceiling from label autocorrelation alone | 0.785 |
+| current CNN (`w2048_b5_f64_mask`) | | 0.680 |
+
+The CNN sits between them: barely above the composition baseline, and **below the
+ceiling implied by its own window width**. That gap is the headroom.
 
 ## Class imbalance (per-region)
 
@@ -151,7 +218,14 @@ After the matching data exists for the current `WINDOW`/`AGGREGATE`:
 ```bash
 sbatch slurm/train.sbatch            # -> Models/best_model_{w,agg}{WINDOW}.pt + loss curve
 sbatch slurm/train.sbatch --balance  # per-region: thin the score=1.0 spike (train only)
+
+# context-width sweep -- no data regeneration needed, ~8x cheaper per epoch
+sbatch slurm/train.sbatch --num-blocks 5 --num-filters 64 --crop 256 --center-pool
 ```
+
+Crop / center-pool runs save under their own tags (`_c256`, `_ctr`), so they never
+overwrite the full-window baseline. Pass the same `--crop`/`--center-pool` to
+`eval_report.py` and `predict.py`.
 
 ### 3. Evaluate / predict
 ```bash
@@ -176,16 +250,18 @@ data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
 
 | File | Purpose |
 |---|---|
-| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`, `REGION_MASK`, `BALANCE_SPIKE`) |
-| `src/prepare_data.py` | bedgraph → sequences, MACS2 peak filter, chrom split, parquet |
+| `src/config.py` | shared experiment settings (`WINDOW`, `CROP`, `AGGREGATE`, `REGION_MASK`, `CENTER_POOL`, `DEDUP_REGIONS`, `PEAK_FILTER`, `BALANCE_SPIKE`) |
+| `src/prepare_data.py` | bedgraph → sequences, dedup, optional peak filter, chrom split, parquet |
 | `src/widen_windows.py` | re-extract wider context windows from existing splits |
 | `src/aggregate_bins.py` | summed-bin experiment: tile genome, sum scores per bin |
 | `src/model.py` | CNN, attention pooling, `GenomicDataset`, dataloader |
 | `src/trainer.py` | `Trainer` (training/validation loops, checkpointing) |
 | `src/train.py` | training entry point, hyperparameters, loss-curve plot |
 | `src/eval_report.py` | full eval report: metrics + diagnostic plots + summary |
+| `src/baselines.py` | composition / k-mer / smoothed-label baselines to beat |
 | `src/predict.py` | run inference on new sequences |
 | `slurm/*.sbatch` | Slurm submission scripts |
+| `docs/FINDINGS.md` | audit: data bugs, baselines, and what to try next |
 
 ## Tests
 
