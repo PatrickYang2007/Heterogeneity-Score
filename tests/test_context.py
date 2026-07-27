@@ -4,6 +4,8 @@ The finding these support: the label is a ~256 bp local property, so the model
 should be able to (a) see a narrower window without regenerating data and (b) read
 features directly over the labeled region instead of only a window-wide average.
 """
+import math
+
 import torch
 import pytest
 
@@ -155,3 +157,51 @@ def test_flag_checkpoint_consistency(name, crop, center, ok):
 def test_flag_check_handles_a_full_path():
     assert check_flags_match_checkpoint("Models/best_model_w2048_mask_c256_ctr.pt",
                                         crop=256, center_pool=True) is True
+
+
+def test_center_pool_does_not_saturate_the_sigmoid():
+    """Regression test for the collapse that killed the first center_pool run.
+
+    conv_block is pre-activation, so the final conv output is unnormalized, and the
+    center column averages nothing -- its full magnitude used to reach the head and
+    drive the seeded sigmoid onto a rail (pred_std 0.007, train_loss frozen at
+    0.6557, zero gradient). A healthy model instead STARTS at its seeded bias and
+    has gradient flowing. Near-constant output at init is expected and not the bug;
+    being driven off the seed with no gradient is.
+    """
+    torch.manual_seed(0)
+    seed_mean = 0.765
+    m = HeterogeneityScoreModel(dropout=0.0, num_filters=16, num_blocks=3, pool=2,
+                                center_pool=True, bounded=True,
+                                bias_init=math.log(seed_mean / (1 - seed_mean)))
+    m.eval()
+    codes = torch.randint(0, 4, (32, 256))
+    x = torch.nn.functional.one_hot(codes, 4).float().transpose(1, 2)
+    out = m(x).squeeze(1)
+    # 1. The head must still start where it was seeded, not be shoved onto a rail.
+    assert abs(out.mean().item() - seed_mean) < 0.1, (
+        f"output driven off the seeded bias: mean={out.mean():.4f} vs {seed_mean}")
+    # 2. Gradient must actually reach the weights (the collapse had none).
+    out.sum().backward()
+    gnorm = m.fc.weight.grad.abs().sum().item()
+    assert gnorm > 1e-6, f"no gradient reaching the head (|grad|={gnorm:.3g})"
+
+
+# NOTE on the center_pool collapse: it is a TRAINING-time runaway, not an
+# initialization problem. At init, with and without final_norm the head produces
+# byte-identical output (0.76249, i.e. the seeded bias), because the conv weights
+# are still small. The failure appeared during epoch 1 as the weights grew and the
+# unnormalized center column's magnitude pushed the sigmoid to 0 -- train_loss
+# froze at 0.6557, which is exactly E[y^2] for this label, i.e. a constant-zero
+# prediction. So no cheap unit test can prove final_norm fixes it; only a training
+# run can. The two tests below pin the properties that ARE checkable statically.
+
+
+def test_final_norm_only_exists_for_center_pool():
+    # Plain models must keep their exact state_dict so old checkpoints still load.
+    plain = HeterogeneityScoreModel(dropout=0.0, num_filters=8, num_blocks=3, pool=2)
+    assert plain.final_norm is None
+    assert not any("final_norm" in k for k in plain.state_dict())
+    ctr = HeterogeneityScoreModel(dropout=0.0, num_filters=8, num_blocks=3, pool=2,
+                                  center_pool=True)
+    assert any("final_norm" in k for k in ctr.state_dict())

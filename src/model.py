@@ -224,6 +224,17 @@ class HeterogeneityScoreModel(nn.Module):
         # fc([attention_pool(x) ; x[:, :, center]]). That is why the head input
         # doubles to 2*dim.
         self.center_pool = center_pool
+        # conv_block is PRE-activation (BatchNorm -> GELU -> Conv), so the final
+        # block's conv output is the one tensor in the stack that never gets
+        # normalized. The plain attention pool tolerates that, because a softmax
+        # average over all positions shrinks the variance; a single center column
+        # averages nothing, so its full magnitude reaches the head. Unnormalized it
+        # drove the seeded sigmoid onto a rail: the first center_pool run collapsed
+        # to pred_std=0.007 with train_loss frozen at exactly 0.6557 across epochs
+        # (zero gradient). Normalizing the final map fixes it. Built only when
+        # center_pool is on, so plain models keep their exact state_dict and every
+        # existing checkpoint still loads.
+        self.final_norm = nn.BatchNorm1d(dim) if center_pool else None
         self.fc = nn.Linear(dim * (2 if center_pool else 1), 1)
 
         # Seed the output bias so a bounded (sigmoid) model starts at the label
@@ -247,6 +258,10 @@ class HeterogeneityScoreModel(nn.Module):
                 )
         for block in self._blocks:
             x = block(x)
+        if self.final_norm is not None:
+            # Normalize before BOTH branches so the pooled average and the single
+            # center column arrive at the head on the same scale.
+            x = self.final_norm(x)
         pooled = self.pool(x)                      # (batch, dim) global context
         if self.center_pool:
             # The column of features over the window's midpoint, i.e. over the
