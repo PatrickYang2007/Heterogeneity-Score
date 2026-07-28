@@ -7,3 +7,5 @@ __pycache__/
 *.pt
 *.png
 *.log
+attributions/
+*.npz
