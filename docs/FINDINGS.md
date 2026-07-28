@@ -197,25 +197,35 @@ would otherwise have produced plausible-looking but wrong numbers.
 DeepLIFT decomposes linear ops and elementwise nonlinearities. `AttentionPool`
 computes `(x * softmax(g(x))).sum(dim=1)`: a *multiplication of two branches that
 both depend on x*, for which DeepLIFT has no rule, so Captum silently passes raw
-gradients through it. The damage is measurable — attributions should sum to
-`f(x) − f(reference)` exactly, and instead:
+gradients through it. Attributions should sum to `f(x) − f(reference)` to
+numerical precision. Instead, `|Σattr − Δf| / |Δf|`:
 
-| | median | p90 |
+| model | median | p90 |
 |---|---|---|
-| `\|Σattr − Δf\| / \|Δf\|` | **0.14** | 0.71 |
+| 512 bp crop (12 windows) | 0.14 | 0.71 |
+| full 2048 bp, best checkpoint (256 windows) | **0.20** | 1.29 |
 
-Against exact ISM (12 windows, 512 bp crop, 20 refs), per-base agreement:
+A p90 error above 1.0 means the attributions for those windows sum to something
+further from `Δf` than zero would be. **DeepLIFT numbers from this architecture
+are approximate.** Re-run this check if `AttentionPool` is ever replaced — it is
+the specific thing breaking the rule.
 
-| method | median r vs ISM |
-|---|---|
-| gradient × input | **0.77** |
-| DeepLIFT (GELU rule patched in) | 0.71 |
-| DeepLIFT (as Captum ships it) | 0.63 |
+Per-base agreement with exact ISM, and note that **the ranking of the two
+approximate methods is not stable across models**:
 
-A supposedly-exact decomposition losing to plain gradients is the same result
-seen from the other side. **Use ISM** — it is exact and costs only ~4·L forward
-passes through a small conv stack. Re-run the comparison if `AttentionPool` is
-ever replaced; it is the specific thing breaking DeepLIFT here.
+| method | 512 bp crop (12 windows) | full 2048 bp, best ckpt (256 windows) |
+|---|---|---|
+| DeepLIFT (GELU rule patched in) | 0.71 | **0.68** |
+| gradient × input | **0.77** | 0.56 |
+| DeepLIFT (as Captum ships it) | 0.63 | — |
+
+So neither approximation can be trusted on reputation: gradient × input beats
+DeepLIFT on the cropped model and loses badly to it at full width, and neither
+gets past r ≈ 0.7 against the exact answer. Since that exact answer is affordable
+— **256 windows × 2048 bp, all three methods, 3 min 06 s on one GPU** — there is
+no real reason to use the approximations here at all. The default is
+`--method ism --method deeplift`, so every run reports this comparison rather
+than taking the approximation on trust.
 
 **Captum has no DeepLIFT rule for GELU, and skips it without warning.** Captum
 0.7.0's `SUPPORTED_NON_LINEAR` covers ReLU/ELU/LeakyReLU/Sigmoid/Tanh/Softplus/
@@ -242,6 +252,43 @@ look convincing. The default reference is a **dinucleotide-shuffled** version of
 the window itself (Altschul–Erikson), which pins GC *and* CpG content, so the
 attributions isolate what the model gets from base **order** — the part that is
 actually in question.
+
+### What the attributions actually say (256 val windows, best checkpoint)
+
+**The model does concentrate on the centre — about 3× — but half its signal is
+still outside the central 512 bp.**
+
+| central window | % of the 2048 bp | % of total \|ISM attribution\| | enrichment |
+|---|---|---|---|
+| 16 bp (the labelled region) | 0.8% | 2.3% | 2.9× |
+| 64 bp | 3.1% | 10.5% | 3.4× |
+| 256 bp | 12.5% | 38.2% | 3.1× |
+| 512 bp | 25.0% | 51.2% | 2.0× |
+
+This corroborates §3 from inside the model. Cropping to 256–512 bp costs
+essentially nothing on test, and the attributions say why: the central 256 bp
+carries ~38% of the total contribution at 3× enrichment, while the outer 75% of
+the window carries ~49% at *below* background density — mass that the crop
+experiment showed is not buying accuracy.
+
+**It has learned composition, including CpG specifically — which is the expected
+result, not a reassuring one.** Mean ISM attribution of the observed base:
+
+| base | mean attribution | | context | mean attribution |
+|---|---|---|---|---|
+| A | +0.0023 | | C inside a CpG | **−0.0134** |
+| T | +0.0011 | | C not in a CpG | −0.0007 |
+| G | −0.0016 | | | |
+| C | −0.0020 | | | |
+
+AT contributes positively, GC negatively, and a C is scored ~19× more negatively
+when a G follows it — so the model has genuinely separated CpG from plain C
+content, which is real dinucleotide structure rather than a base-frequency
+effect. But this is precisely what the 6-parameter GC/CpG baseline already
+encodes, and that baseline reaches 0.60 of the CNN's 0.69. The attributions do
+not, so far, show evidence of anything beyond it. Looking for that is the natural
+next use of this tool: the `hyp_*` arrays in the output `.npz` are in the layout
+TF-MoDISco expects, so motif discovery over a larger sample is the direct test.
 
 ---
 

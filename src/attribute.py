@@ -18,9 +18,10 @@ are not interchangeable:
              cheaper than ISM, so it is the only option at whole-genome scale.
              But see "Why DeepLIFT is approximate here" below: this model has an
              attention pool, and DeepLIFT has no rule for it.
-  gradxinput Plain gradient * input. One backward pass, no reference. Included
-             as a control -- but note it beat DeepLIFT against ISM on this model
-             (0.77 vs 0.71), which is itself evidence about the attention pool.
+  gradxinput Plain gradient * input. One backward pass, no reference at all, so
+             it cannot separate "this base matters" from "this window is
+             GC-rich". A control -- though on the cropped model it beat DeepLIFT
+             against ISM, which is itself evidence about the attention pool.
 
 Two things about this model specifically break the naive recipe, and both are
 silent failures -- you get plausible-looking numbers either way:
@@ -78,17 +79,27 @@ WHY DEEPLIFT IS APPROXIMATE HERE (read before trusting it)
    correlate only r=0.86 with each other, and agreement with exact ISM goes
    0.625 -> 0.714.
 
-   Measured on this model (12 windows, 512 bp crop, 10 refs, vs exact ISM):
-       gradient * input   0.77
-       DeepLIFT (patched) 0.71
-       DeepLIFT (as captum ships it) 0.63
-   and completeness |sum(attr) - delta| / |delta| has median 0.14, p90 0.71.
-   A correct DeepLIFT should satisfy completeness to numerical precision, so a
-   14% median error is the attention pool's missing rule showing up directly --
-   and a supposedly-exact decomposition losing to plain gradients is the same
-   result from the other side. TREAT DEEPLIFT NUMBERS FROM THIS ARCHITECTURE AS
-   APPROXIMATE. ISM is exact and, at ~3*L forward passes through a 5-block/64-
-   filter stack, cheap enough to just use.
+   Measured agreement with exact ISM, on two checkpoints:
+
+                                     512 bp crop      full 2048 bp
+                                     (12 windows)     (256 windows)
+       DeepLIFT (patched)                0.71             0.68
+       gradient * input                  0.77             0.56
+       DeepLIFT (as captum ships it)     0.63              --
+       completeness median rel. err.     0.14             0.20
+       completeness p90  rel. err.       0.71             1.29
+
+   Read two things off that. First, a correct DeepLIFT satisfies completeness to
+   numerical precision, so a 14-20% median error IS the attention pool's missing
+   rule, showing up directly; a p90 above 1.0 means those windows' attributions
+   sum further from delta than zero would. Second, THE RANKING OF THE TWO
+   APPROXIMATIONS FLIPS between models -- neither can be trusted on reputation,
+   and neither clears r ~ 0.7 against the exact answer.
+
+   ISM has no such caveat and is cheap: 256 windows x 2048 bp, all three
+   methods, ran in 3 min on one GPU. Prefer it. The others are here to be
+   checked against it, which is why the default is `--method ism --method
+   deeplift` rather than deeplift alone.
 
    Re-run that comparison after any architecture change -- especially one that
    removes or replaces AttentionPool, which is the thing breaking DeepLIFT here.
