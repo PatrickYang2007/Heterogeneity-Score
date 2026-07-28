@@ -68,9 +68,30 @@ more sequence than the signal supports, and it is not free:
 
 - the labelled 16 bp becomes 1 of 64 positions after 5 pool-2 blocks, and
   `AttentionPool` returns a softmax-weighted **average** over all of them;
-- 8× more sequence to memorize — these runs overfit by **epoch 2** (`logs/train_model.7433705.out`:
-  train loss falls monotonically while val loss goes 0.36 → 1.31);
 - 8× the compute per epoch (~45 min/epoch).
+
+**Correction (measured after this section was written).** An earlier draft also
+claimed the wide window drives the epoch-2 overfitting ("8× more sequence to
+memorize"). **That is wrong.** A context sweep on the regenerated data
+(`--crop 256/512` vs full 2048 bp, jobs 7992482–4 / 7993257) shows the cropped runs
+peak at epoch **1–2** — *earlier* than the full-window run's epoch 6 — so narrowing
+the context does not delay overfitting at all. Every config plateaus almost
+immediately and lands within 0.006 of the others on test:
+
+| context | val Pearson | test Pearson | best epoch | wall time |
+|---|---|---|---|---|
+| 2048 bp | 0.7073 | (not yet evaluated) | 6 | 3 h 14 |
+| 512 bp | 0.7180 | 0.6902 | 1 | 1 h 10 |
+| 256 bp | 0.7123 | 0.6870 | 2 | 0 h 30 |
+| 256 bp + center-pool | 0.7110 | 0.6933 | 1 | 0 h 42 |
+
+So the case for a narrow window is **compute, not accuracy**: 512 bp reaches a
+better val score at epoch 1 (~6 min) than 2048 bp reaches at epoch 6 (~2 h),
+roughly 20× cheaper. On test the ordering even flips (center-pool best, 256 bp
+worst) and the whole spread is 0.006, i.e. noise. Context width is *not* the
+binding constraint, and neither is the attention-pool dilution — giving the head
+the labelled region's features directly (`--center-pool`) did not help either.
+The real gap remains §2: ~0.69 test against a 0.774 smoothed-label ceiling.
 
 Direct check on the trained model: shifting the input window by 16 bp — one whole
 region — moves the prediction by 0.021 on a prediction std of 0.194
@@ -166,6 +187,62 @@ re-enabling.
 - **`filter_by_macs2_peaks` was O(rows × peaks)** — a Python row-loop over 10.7M
   rows. Now a vectorized per-chromosome binary search.
 
+## 7. Per-base attributions: DeepLIFT is not trustworthy on this architecture
+
+`src/attribute.py` gives a contribution score for every base in a window (ISM,
+DeepLIFT, gradient × input). Three findings came out of building it, all of which
+would otherwise have produced plausible-looking but wrong numbers.
+
+**DeepLIFT's completeness guarantee does not hold here — measured, not assumed.**
+DeepLIFT decomposes linear ops and elementwise nonlinearities. `AttentionPool`
+computes `(x * softmax(g(x))).sum(dim=1)`: a *multiplication of two branches that
+both depend on x*, for which DeepLIFT has no rule, so Captum silently passes raw
+gradients through it. The damage is measurable — attributions should sum to
+`f(x) − f(reference)` exactly, and instead:
+
+| | median | p90 |
+|---|---|---|
+| `\|Σattr − Δf\| / \|Δf\|` | **0.14** | 0.71 |
+
+Against exact ISM (12 windows, 512 bp crop, 20 refs), per-base agreement:
+
+| method | median r vs ISM |
+|---|---|
+| gradient × input | **0.77** |
+| DeepLIFT (GELU rule patched in) | 0.71 |
+| DeepLIFT (as Captum ships it) | 0.63 |
+
+A supposedly-exact decomposition losing to plain gradients is the same result
+seen from the other side. **Use ISM** — it is exact and costs only ~4·L forward
+passes through a small conv stack. Re-run the comparison if `AttentionPool` is
+ever replaced; it is the specific thing breaking DeepLIFT here.
+
+**Captum has no DeepLIFT rule for GELU, and skips it without warning.** Captum
+0.7.0's `SUPPORTED_NON_LINEAR` covers ReLU/ELU/LeakyReLU/Sigmoid/Tanh/Softplus/
+MaxPool/Softmax; `_can_register_hook` returns `False` for anything else and moves
+on. Every block here is `BatchNorm → GELU → Conv`, so unpatched Captum degrades
+to gradients at *every* activation while still reporting "DeepLIFT". The two
+versions correlate only r = 0.86 with each other. `register_gelu_rule()` installs
+the generic Rescale rule; it is applied automatically.
+
+**Attribute the logit, not the sigmoid — but for the right reason.** The sigmoid
+is a monotone scalar map applied once at the end, so it scales an entire window's
+attributions by one constant: within a window the profile shape is *unchanged*
+(r = 1 exactly). What it breaks is comparability **across** windows. On 3000 val
+windows `sigmoid'(z)` runs 0.008 → 0.25, a 30× spread, and it is systematic:
+label = 1.0 windows are squashed ~1.6× harder than the median. So single-window
+logos are fine either way, but anything that pools across windows — genome-wide
+position ranking, TF-MoDISco, averaged profiles — is distorted. `LogitView`
+handles this and is the default.
+
+**Reference choice matters more here than usual.** §1 found a 6-parameter GC/CpG
+model already reaches ~0.60 test Pearson against the CNN's ~0.69. Attributing
+against an all-zero baseline would therefore largely re-derive GC content and
+look convincing. The default reference is a **dinucleotide-shuffled** version of
+the window itself (Altschul–Erikson), which pins GC *and* CpG content, so the
+attributions isolate what the model gets from base **order** — the part that is
+actually in question.
+
 ---
 
 ## What to try, in expected-value order
@@ -190,6 +267,11 @@ re-enabling.
 ```bash
 python src/baselines.py --sample 20000                 # §1, §2, §3
 python src/baselines.py --which smoothed --halves 64 256 1024
+# §7 — prints the completeness error and ISM-vs-DeepLIFT agreement quoted above
+sbatch slurm/attribute.sbatch data/val_w2048.parquet \
+    --weights Models/best_model_w2048_b5_f64_mask_monpearson.pt \
+    --window 2048 --num-blocks 5 --num-filters 64 \
+    --method ism --method deeplift --method gradxinput --n-regions 256
 awk -F'\t' '{f[$5]++; s[$5]+=$4} END{for(k in f) print k, f[k], s[k]/f[k]}' \
     data/entropy_specificity_onGreaterThan1_stitched_annotated_complete.bedgraph
 tail -n +2 data/peaks.bed | awk -F'\t' '{print $1,$2,$3,($3-$2)/1e6" Mb"}'

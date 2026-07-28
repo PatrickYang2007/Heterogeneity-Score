@@ -21,3 +21,9 @@ dependencies:
   - macs2=2.2.9.1
   # testing
   - pytest=8.3.5
+  # attribution (src/attribute.py). Not on the conda channels above for this
+  # python/torch pin, so it comes from pip. Note that 0.7.0 has no DeepLIFT rule
+  # for GELU -- src/attribute.py patches one in; see docs/FINDINGS.md §7.
+  - pip
+  - pip:
+      - captum==0.7.0
