@@ -10,10 +10,10 @@ The pipeline turns a scored bedgraph into `(sequence, score)` examples, encodes
 the DNA as one-hot, and trains a CNN to regress the score from sequence alone.
 
 ```
-bedgraph (chrom, start, end, score)
+bedgraph (chrom, start, end, score, feature, gene)
       │
       ▼
-prepare_data.py ──► MACS2 peak filtering ──► chrom split ──► data/{train,val,test}.parquet
+prepare_data.py ──► dedup ──► [optional MACS2 filter] ──► chrom split ──► data/{train,val,test}.parquet
       │
       ▼  (optional: widen the 16 bp regions to a larger context window)
 widen_windows.py ──► data/{train,val,test}_w256.parquet
@@ -22,8 +22,16 @@ widen_windows.py ──► data/{train,val,test}_w256.parquet
 train.py ──► model.py (CNN) + trainer.py (Trainer) ──► best_model.pt
       │
       ▼
-eval_report.py / predict.py
+eval_report.py / predict.py        baselines.py (what the model must beat)
 ```
+
+> **Read [`docs/FINDINGS.md`](docs/FINDINGS.md) before running anything.** An audit
+> found two data-prep bugs that were corrupting the dataset — annotation-duplicated
+> rows (38.7% of the file) and a MACS2 filter discarding ~48% of the data on 46
+> degenerate multi-megabase "peaks" — and established that the CNN only narrowly
+> beats a six-parameter GC/CpG baseline. Both bugs are fixed here, but **the data
+> must be regenerated**, and metrics from before the fix are not comparable to
+> metrics after.
 
 ## Data representation
 
@@ -106,6 +114,56 @@ regions whose center falls inside it. Because the label is a sum (range
 MSE/loss values are **not** comparable between the two modes because the labels
 live on different scales — compare them by Pearson/Spearman correlation instead.
 
+## Data integrity (read before regenerating)
+
+Two `prepare_data.py` steps were corrupting the dataset; both are fixed and both
+are toggles in `src/config.py`. Full evidence in [`docs/FINDINGS.md`](docs/FINDINGS.md).
+
+- **`DEDUP_REGIONS`** (default **on**). The bedgraph is annotated, not
+  deduplicated — it emits one row per (interval × overlapping annotation), so the
+  same 16 bp interval appears up to 9 times with the same score. **38.7% of rows
+  are duplicates.** Multiplicity anti-correlates with the label (multiplicity
+  1 → mean score 0.79, 5 → 0.49), so leaving them in oversamples the low-score
+  tail 3–5× in training and makes val/test metrics per-row rather than per-locus.
+  Deduplication refuses to run if duplicates disagree on the score.
+
+- **`PEAK_FILTER`** (default **off**). The MACS2 filter used to be unconditional
+  and dropped ~48% of regions — on the basis of 46 "peaks" spanning up to 203 Mb,
+  overlapping and nested. `bdgpeakcall` needs a position-sorted track, and this
+  bedgraph is sorted by *annotation class* first (it restarts the genome 12 times).
+  MACS2 exits 0 on that input and writes a plausible-looking file anyway.
+  `prepare_data.py` now sorts before calling MACS2 and warns via
+  `check_peaks_sane()`, but inspect `data/peaks.bed` before re-enabling this.
+
+Effect of the fixes: 10,673,450 rows → **6,540,072 unique regions**, and unique
+training loci roughly double (2.70M → 5.17M) because the duplicates are gone *and*
+the arbitrary peak filter no longer removes half the genome.
+
+Annotation columns (`feature`, `gene`) now ride along into the parquets for
+stratified evaluation. They are **never** model inputs — the model predicts from
+sequence alone.
+
+## Baselines
+
+`src/baselines.py` computes what any architecture change has to beat. Run it
+alongside every eval; a model that doesn't pull away from the composition baseline
+hasn't learned sequence grammar.
+
+```bash
+python src/baselines.py --sample 20000
+```
+
+| baseline | what it measures | test Pearson |
+|---|---|---|
+| composition (GC/CpG, central 256 bp) | how far 6 numbers get you | 0.578 |
+| k-mer ridge (3-mer, 256 bp) | composition without positional information | 0.573 |
+| smoothed label (±1024 bp, leave-one-out) | ceiling from label autocorrelation alone | 0.774 |
+
+Composition peaks at **256 bp** of context and decays to 0.529 at 2048 bp, so the
+current 2048 bp window is likely far more context than the signal supports. The
+pre-fix CNN scored 0.680 — above the composition baseline, but **below the ceiling
+implied by its own window width**. That gap is the headroom.
+
 ## Usage
 
 Dependencies: `torch`, `pandas`, `numpy`, `pyfaidx`, `scipy`, `matplotlib`, and
@@ -156,16 +214,18 @@ data/     genome FASTA, bedgraph, and parquet splits (git-ignored)
 
 | File | Purpose |
 |---|---|
-| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`) |
-| `src/prepare_data.py` | bedgraph → sequences, MACS2 peak filter, chrom split, parquet |
+| `src/config.py` | shared experiment settings (`WINDOW`, `AGGREGATE`, `REGION_MASK`, `DEDUP_REGIONS`, `PEAK_FILTER`) |
+| `src/prepare_data.py` | bedgraph → sequences, dedup, optional peak filter, chrom split, parquet |
 | `src/widen_windows.py` | re-extract wider context windows from existing splits |
 | `src/aggregate_bins.py` | summed-bin experiment: tile genome, sum scores per bin |
 | `src/model.py` | CNN, attention pooling, `GenomicDataset`, dataloader |
 | `src/trainer.py` | `Trainer` (training/validation loops, checkpointing) |
 | `src/train.py` | training entry point, hyperparameters, loss-curve plot |
 | `src/eval_report.py` | full eval report: metrics + diagnostic plots + summary |
+| `src/baselines.py` | composition / k-mer / smoothed-label baselines to beat |
 | `src/predict.py` | run inference on new sequences |
 | `slurm/*.sbatch` | Slurm submission scripts |
+| `docs/FINDINGS.md` | audit: data bugs, baselines, and what to try next |
 
 ## Tests
 

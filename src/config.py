@@ -37,6 +37,34 @@ REGION_MASK = True
 # region midpoint, so the region occupies the central REGION_WIDTH positions.
 REGION_WIDTH = 16
 
+# Drop duplicate regions in prepare_data.py. The source bedgraph is annotated,
+# not deduplicated: the same 16 bp interval is emitted once per overlapping
+# annotation (gene x feature class), so a locus covered by two overlapping genes
+# appears twice with the SAME score. Measured on the full file, 38.7% of rows are
+# exact duplicates of another row (up to 9 copies of one locus).
+#
+# That silently reweights training: duplication multiplicity anti-correlates with
+# the label (multiplicity 1 -> mean score 0.79, multiplicity 5 -> 0.49), so the
+# low-score tail is oversampled 3-5x relative to the real per-locus distribution.
+# It also makes val/test metrics per-ROW rather than per-LOCUS, which is not the
+# quantity being reported. Leave this on unless you specifically want the old
+# annotation-weighted behavior. See docs/FINDINGS.md.
+DEDUP_REGIONS = True
+
+# Run MACS2 bdgpeakcall and keep only regions overlapping a called peak.
+#
+# OFF by default because on this bedgraph it does not work. bdgpeakcall assumes a
+# position-sorted coverage track; this file is sorted by ANNOTATION CLASS first
+# (it restarts the genome 12 times -- 3primeUTR, 5primeUTR, CA, ..., pELS -- with
+# 5.77M chromosome switches), so MACS2 saw a wildly non-monotonic coordinate
+# stream and emitted 46 nonsensical "peaks" spanning up to 203 Mb, overlapping and
+# nested. Filtering on those dropped ~48% of the data on an arbitrary,
+# chromosome-uneven basis (chr16 kept only 2.2 Mb of 90 Mb; chr2 kept one 203 Mb
+# "peak"). prepare_data.py now sorts by position before calling MACS2, which is
+# necessary but probably not sufficient -- a 0-1 bounded score is not the signal
+# bdgpeakcall was designed for. Verify the peak file looks sane before trusting it.
+PEAK_FILTER = False
+
 
 # --------------------------------------------------------------------------
 # Derived settings. train.py / predict.py / eval_report.py all need the same

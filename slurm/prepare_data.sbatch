@@ -4,7 +4,7 @@
 #SBATCH --error=logs/prepare_data.%j.err
 #SBATCH --partition=ycga
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=pattyyang1@gmail.com
@@ -17,4 +17,4 @@ source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate heterogeneityScore
 
 cd "/vast/palmer/pi/garg/Patrick/Heterogeneity Score"
-python src/prepare_data.py
+python src/prepare_data.py "$@"
